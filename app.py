@@ -53,7 +53,7 @@ def video_id(raw:str)->str:
     except Exception as exc: raise ValueError("Enter a valid YouTube URL.") from exc
 
 def public(job):
-    fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","error")
+    fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","audio_codec","audio_channels","error")
     data={key:job.get(key) for key in fields}
     if job["state"]=="ready":
         data["download_url"]="/api/download/"+job["id"]
@@ -122,6 +122,68 @@ def quality_label(path:Path,fmt:str)->str|None:
         return None
 
 
+
+def mp4_audio_info(path:Path)->dict:
+    """Inspect real streams, not just the MP4 extension."""
+    probe=subprocess.run(
+        ["ffprobe","-v","error","-show_entries",
+         "stream=codec_type,codec_name,channels,sample_rate",
+         "-of","json",str(path)],
+        capture_output=True,text=True,timeout=30,check=False)
+    if probe.returncode!=0:
+        raise ValueError("The video file could not be inspected for sound.")
+    streams=json.loads(probe.stdout).get("streams",[])
+    if not any(stream.get("codec_type")=="video" for stream in streams):
+        raise ValueError("The completed MP4 is missing its video track.")
+    audio=next((stream for stream in streams
+                if stream.get("codec_type")=="audio" and int(stream.get("channels") or 0)>0),None)
+    if not audio:
+        raise ValueError("The MP4 has no audio track. Please check whether the source video contains sound.")
+    return audio
+
+
+def ensure_mp4_audio(path:Path)->dict:
+    """Make MP4 sound widely compatible without recompressing the video.
+
+    YouTube's highest-quality audio is frequently Opus. Opus in an MP4
+    container plays silently on some devices. Preserve 4K video untouched,
+    but convert non-AAC or multichannel audio to stereo AAC.
+    """
+    audio=mp4_audio_info(path)
+    codec=audio.get("codec_name")
+    channels=int(audio.get("channels") or 0)
+    if codec!="aac" or channels>2:
+        temp=path.with_name(path.stem+"-aac"+path.suffix)
+        try:
+            command=["ffmpeg","-nostdin","-hide_banner","-loglevel","error","-y",
+                     "-i",str(path),"-map","0:v:0","-map","0:a:0",
+                     "-c:v","copy","-c:a","aac","-b:a","256k","-ar","48000",
+                     "-ac","2","-movflags","+faststart",str(temp)]
+            result=subprocess.run(command,capture_output=True,text=True,timeout=900,check=False)
+            if result.returncode!=0 or not temp.is_file() or temp.stat().st_size<1024:
+                log.warning("MP4 AAC repair failed: %s",result.stderr[-700:])
+                raise ValueError("The video's audio could not be made compatible with MP4.")
+            if temp.stat().st_size>FILE_LIMIT:
+                raise ValueError("The MP4 exceeds the maximum download size.")
+            verified=mp4_audio_info(temp)
+            if verified.get("codec_name")!="aac":
+                raise ValueError("The audio could not be encoded as AAC.")
+            temp.replace(path)
+            audio=verified
+        finally:
+            temp.unlink(missing_ok=True)
+    # Decode audio samples to catch corrupt or unreadable audio tracks,
+    # without decoding/re-encoding the video stream.
+    playback=subprocess.run(
+        ["ffmpeg","-nostdin","-hide_banner","-v","error","-xerror",
+         "-i",str(path),"-map","0:a:0","-t","3","-f","null","-"],
+        stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,
+        timeout=45,check=False)
+    if playback.returncode!=0:
+        raise ValueError("The MP4 audio track could not be decoded correctly.")
+    return {"audio_codec":"aac","audio_channels":int(audio.get("channels") or 2)}
+
+
 def youtube_output_options(fmt:str,quality:int)->dict:
     """Pick best available streams for Auto (0), or enforce a user-selected cap."""
     if fmt=="mp3":
@@ -133,7 +195,7 @@ def youtube_output_options(fmt:str,quality:int)->dict:
     if quality==0:
         # Match yt-dlp's default best-video-plus-best-audio selection.
         # No height cap: may select 1440p, 2160p, or higher source video.
-        return {"format":"bestvideo*+bestaudio/best",
+        return {"format":"bestvideo+bestaudio/best",
                 "format_sort":["res","fps","hdr:12","vcodec","acodec"],
                 "merge_output_format":"mp4"}
     cap=str(quality)
@@ -200,7 +262,9 @@ def convert(jid,vid,fmt,quality):
         files=sorted(directory.glob("*."+fmt))
         if not files: raise ValueError("No compatible output is available for this video.")
         if files[0].stat().st_size>FILE_LIMIT: raise ValueError("Converted file is too large.")
-        change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),actual_quality=quality_label(files[0],fmt),ended=time.time())
+        audio_meta=ensure_mp4_audio(files[0]) if fmt=="mp4" else {}
+        change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),
+               actual_quality=quality_label(files[0],fmt),**audio_meta,ended=time.time())
     except Exception as exc:
         log.warning("Job %s failed: %s",jid,type(exc).__name__)
         text=str(exc).lower()
@@ -225,7 +289,7 @@ async def headers(request:Request,call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail","best_quality_auto","organized_folders","parallel_fragments","batch_links"]}
+    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail","best_quality_auto","organized_folders","parallel_fragments","batch_links","aac_mp4_audio"]}
 
 
 def run_queued_conversion(jid:str,vid:str,fmt:str,quality:int)->None:
@@ -483,9 +547,11 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
             raise ValueError("FFmpeg could not convert this file. Check the media or try another format.")
         if output.stat().st_size>FILE_LIMIT:
             raise ValueError("Converted file exceeds the maximum permitted size.")
+        audio_meta=ensure_mp4_audio(output) if fmt=="mp4" else {}
         source.unlink(missing_ok=True)
         change(jid,state="ready",progress=100,message="Ready to download",
-               file=str(output),actual_quality=quality_label(output,fmt),ended=time.time())
+               file=str(output),actual_quality=quality_label(output,fmt),
+               **audio_meta,ended=time.time())
     except Exception as exc:
         log.warning("Uploaded media conversion %s failed (%s)",jid,type(exc).__name__)
         change(jid,state="error",progress=0,message="Conversion failed",
