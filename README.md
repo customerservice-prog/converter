@@ -106,3 +106,12 @@ The initial version failed for YouTube video `NY6acnscmwo` because YouTube issue
 ## Best-quality default
 
 The quality selector defaults to `0` (**Best available / Auto**) in the UI, YouTube API and file upload API. For MP4 links, yt-dlp selects the best video and audio streams without a resolution cap and merges to MP4. This may include 4K or higher if available. For MP3, the best available source audio is encoded to 320 kbps; that output bitrate **cannot restore information missing from a lower-quality source**. For user-uploaded video, Auto preserves the original dimensions and remuxes compatible H.264/HEVC + AAC streams without recompression, or uses a high-quality encode where necessary. The completed-job status reports actual resolution or MP3 bitrate. High-quality media takes more time, bandwidth, and temporary storage; limits still apply.
+
+
+## Multi-link batch conversion
+
+Select **Multiple links** on the converter homepage. Paste **2–10 distinct YouTube URLs, one per line**, choose MP3 or MP4, and keep **Best available (Auto)** for full source quality. Up to two videos can be processed concurrently, bounded by the service's global conversion limit. The live batch screen shows every item's status, title, progress, quality, errors, and individual folder download link. When all work completes, **Download all videos** produces one ZIP with a separate folder for every successful video, plus an overall Batch Results.txt. A failed link doesn't discard successfully processed media.
+
+Batches share the normal 20-per-network-address rolling daily conversion quota. Conversion output stays temporarily on the server (default one hour after the batch finishes), and the batch ZIP is built only when requested with ZIP_STORED—no extra media recompression.
+
+**Limits:** this is currently a single Railway instance with in-memory jobs and temporary local files. A server restart or deployment during active conversions clears those jobs; for durable long-running batches, add a persistent queue and shared object storage. A website cannot directly create folders on the user's desktop; the downloaded ZIP contains the folders when extracted. This is not YouTube playlist downloading.

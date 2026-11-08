@@ -13,7 +13,8 @@ const routes={
     ["Why does a conversion sometimes fail?","YouTube may restrict access, the original may be unavailable, the source may exceed size limits, or the server may be temporarily busy. Videos that require sign-in or bypassing restrictions are not supported."],
     ["Where is the file saved?","In your browser's normal downloads folder. On phones, check Files or Downloads."],
     ["How long is the download available?","Completed downloads remain temporarily accessible for approximately one hour, after which the server removes them."],
-    ["Do you support playlists?","No. Paste a single individual video URL."],
+    ["Can I convert multiple videos at once?","Yes. Select Multiple links, paste 2–10 different YouTube video URLs (one per line), then choose MP3 or MP4. The app converts up to two concurrently at the best available quality and offers one ZIP with a separate folder for every successfully converted video. Playlists are not supported."],
+    ["Do you support YouTube playlists?","No. Paste individual video or Shorts URLs in the Multiple links tab instead."],
     ["Do I need permission to download?","Yes. Use the service only for media you own or are authorized to download, and observe the platform's terms."]
    ].map(q=>'<article class="info-card"><h3>'+q[0]+'</h3><p>'+q[1]+'</p></article>').join("")
  },
