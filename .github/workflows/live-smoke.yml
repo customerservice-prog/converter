@@ -74,24 +74,28 @@ jobs:
           assert code==200 and len(body)>4000,(code,len(body))
           assert "audio/mpeg" in headers["Content-Type"],headers["Content-Type"]
           print("SUCCESS: upload to MP3 download works on Railway",flush=True)
-          # Informational URL check for the requested link. It may be challenged by YouTube.
-          payload=json.dumps({"url":"https://youtu.be/NY6acnscmwo",
-                              "format":"mp4","quality":360,
-                              "rights_confirmed":True}).encode()
-          code,body,_=request("/api/jobs",payload,"application/json")
-          if code==202:
+          # Release gate: verify the exact requested YouTube link completes as
+          # both video and audio, and that both formats can actually be downloaded.
+          for fmt, quality, mime in (("mp4",360,"video/mp4"),("mp3",192,"audio/mpeg")):
+              payload=json.dumps({"url":"https://youtu.be/NY6acnscmwo",
+                                  "format":fmt,"quality":quality,
+                                  "rights_confirmed":True}).encode()
+              code,body,_=request("/api/jobs",payload,"application/json")
+              assert code==202,("YouTube job not started",fmt,code,body[:200])
               jid=json.loads(body)["id"]
-              for i in range(40):
+              print("START YOUTUBE",fmt,jid,flush=True)
+              for i in range(150):
                   code,body,_=request("/api/jobs/"+jid)
+                  assert code==200,("job status",fmt,code)
                   state=json.loads(body)
                   if state["state"] in ("ready","error"): break
                   time.sleep(2)
-              if state["state"]=="ready":
-                  print("YOUTUBE_URL_RESULT: WORKING",flush=True)
-              elif state["state"]=="error":
-                  print("YOUTUBE_URL_RESULT: BLOCKED / "+str(state.get("error")),flush=True)
-              else:
-                  print("YOUTUBE_URL_RESULT: STILL_PROCESSING",flush=True)
-          else:
-              print("YOUTUBE_URL_RESULT: API_REJECTED",code,body[:200],flush=True)
+              assert state["state"]=="ready",("YouTube extraction or conversion failed",fmt,state)
+              code,body,headers=request(state["download_url"])
+              assert code==200 and len(body)>10000,("Download unavailable",fmt,code,len(body))
+              assert mime in headers["Content-Type"],("Wrong media type",fmt,headers["Content-Type"])
+              if fmt=="mp4":
+                  assert b"ftyp" in body[:48],("Invalid MP4 signature",body[:48])
+              print("YOUTUBE_URL_RESULT: WORKING",fmt,"download bytes checked:",len(body),flush=True)
+          print("ALL PRODUCTION CONVERSION CHECKS PASSED",flush=True)
           PY
