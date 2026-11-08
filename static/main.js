@@ -61,13 +61,24 @@ function getId(raw){
     return /^[\w-]{11}$/.test(found)?found:"";
   }catch{return "";}
 }
-let format="mp3",pollTimer=null,sourceType="youtube";
+let format="mp3",pollTimer=null,batchTimer=null,sourceType="youtube";
+function enteredBatchLinks(){
+  return $("batchUrls").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+}
+function updateBatchCount(){
+  const entries=enteredBatchLinks();
+  const unique=new Set(entries.map(getId).filter(Boolean));
+  $("batchCount").textContent=unique.size+" / 10 unique video links"+
+    (entries.length!==unique.size?" ("+entries.length+" lines)":"");
+}
 function setSource(value){
   sourceType=value;
   $("urlSourceArea").hidden=value!=="youtube";
+  $("batchSourceArea").hidden=value!=="batch";
   $("uploadSourceArea").hidden=value!=="file";
   $("youtubeHint").hidden=value!=="youtube";
-  for(const [which,id] of [["youtube","youtubeSourceButton"],["file","fileSourceButton"]]){
+  $("convertButton").querySelector("span").textContent=value==="batch"?"Convert all videos":"Convert now";
+  for(const [which,id] of [["youtube","youtubeSourceButton"],["batch","batchSourceButton"],["file","fileSourceButton"]]){
     const active=value===which;
     $(id).classList.toggle("active",active);
     $(id).setAttribute("aria-pressed",String(active));
@@ -132,6 +143,85 @@ async function poll(id){
     if(data.state==="queued"||data.state==="working")pollTimer=setTimeout(()=>poll(id),1400);
   }catch(e){showError("jobError",e.message);$("jobStatus").textContent="Could not check conversion";}
 }
+
+function makeBatchRow(item,index){
+  const row=document.createElement("article");
+  row.className="batch-result";
+  const thumb=document.createElement("img");
+  thumb.className="batch-thumb";
+  thumb.alt="";
+  thumb.loading="lazy";
+  if(item.thumbnail)thumb.src=item.thumbnail;
+  row.appendChild(thumb);
+  const info=document.createElement("div");
+  info.className="batch-result-info";
+  const title=document.createElement("strong");
+  title.textContent=(index+1)+". "+(item.title||"YouTube video");
+  info.appendChild(title);
+  const description=document.createElement("span");
+  description.textContent=item.state==="ready"
+    ?"Ready · "+(item.actual_quality||"Best available")
+    :item.state==="error"?"Failed · "+(item.error||"Unknown error")
+    :item.state==="working"?(item.message||"Converting")+" · "+(item.progress||0)+"%"
+    :"Queued — waiting for an available conversion slot";
+  description.className=item.state==="error"?"batch-result-error":"";
+  info.appendChild(description);
+  row.appendChild(info);
+  if(item.state==="ready" && item.download_url){
+    const link=document.createElement("a");
+    link.href=item.folder_url||item.download_url;
+    link.textContent="↓ Folder";
+    link.className="batch-item-download";
+    link.setAttribute("aria-label","Download folder for "+(item.title||"video "+(index+1)));
+    row.appendChild(link);
+  }
+  return row;
+}
+function updateBatchPanel(data){
+  const terminal=["complete","partial","failed"].includes(data.state);
+  const items=Array.isArray(data.items)?data.items:[];
+  const progress=items.reduce((sum,item)=>sum+(
+    item.state==="ready"||item.state==="error"?100:Math.max(0,Number(item.progress)||0)),0);
+  const pct=data.total?Math.min(100,Math.round(progress/data.total)):0;
+  $("batchProgressFill").style.width=pct+"%";
+  $("batchProgressTrack").setAttribute("aria-valuenow",String(pct));
+  $("batchStatus").textContent=terminal
+    ?(data.failed?"Batch finished — "+data.failed+" failed":"All videos are ready!")
+    :"Converting "+data.total+" videos…";
+  $("batchSummary").textContent=data.processed+" of "+data.total+" completed · "+
+    data.succeeded+" ready · "+data.failed+" failed";
+  $("batchRows").replaceChildren(...items.map(makeBatchRow));
+  $("batchDownload").href=data.download_url||"#";
+  $("batchDownload").hidden=!data.download_url;
+  $("batchDownload").textContent="↓ Download "+data.succeeded+" videos in one ZIP";
+  $("batchReset").hidden=!terminal;
+  if(terminal && data.state==="failed")
+    showError("batchError","None of the videos could be converted. See individual errors above.");
+  else showError("batchError","");
+}
+async function pollBatch(id){
+  try{
+    const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(id),{cache:"no-store"}));
+    updateBatchPanel(data);
+    if(data.state==="working")batchTimer=setTimeout(()=>pollBatch(id),1500);
+  }catch(error){
+    showError("batchError",error.message);
+    $("batchReset").hidden=false;
+  }
+}
+function resetBatch(){
+  if(batchTimer)clearTimeout(batchTimer);
+  $("batchPanel").hidden=true;
+  $("convertForm").hidden=false;
+  $("batchUrls").value="";
+  $("rightsCheck").checked=false;
+  updateBatchCount();
+  showError("batchError","");
+  setSource("batch");
+  window.scrollTo({top:0,behavior:"smooth"});
+  $("batchUrls").focus();
+}
+
 async function submitConversion(e){
   e.preventDefault();
   showError("formError","");
@@ -142,6 +232,19 @@ async function submitConversion(e){
   if(sourceType==="youtube" && !getId(clean($("videoUrl").value))){
     showError("formError","Enter a valid YouTube video URL (including Shorts and share links).");
     return;
+  }
+  if(sourceType==="batch"){
+    const links=enteredBatchLinks();
+    const unique=new Set(links.map(getId));
+    if(links.length<2||unique.size<2){
+      showError("formError","Paste at least two different YouTube video links, one per line.");return;
+    }
+    if(links.length>10 || unique.size>10){
+      showError("formError","You can convert up to 10 different video links per batch.");return;
+    }
+    if(links.some(link=>!getId(link))){
+      showError("formError","One or more links are invalid. Use YouTube video, Shorts, or share URLs.");return;
+    }
   }
   if(sourceType==="file"){
     const file=$("uploadInput").files[0];
@@ -155,6 +258,19 @@ async function submitConversion(e){
   $("convertButton").querySelector("span").textContent=sourceType==="file"?"Uploading…":"Starting…";
   try{
     let response;
+    if(sourceType==="batch"){
+      response=await fetch("/api/batches",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({links:enteredBatchLinks(),format,
+          quality:Number($("quality").value),rights_confirmed:true})});
+      const data=await jsonOrError(response);
+      $("convertForm").hidden=true;
+      $("jobPanel").hidden=true;
+      $("batchPanel").hidden=false;
+      updateBatchPanel(data);
+      pollBatch(data.id);
+      return;
+    }
     if(sourceType==="file"){
       const payload=new FormData();
       payload.append("file",$("uploadInput").files[0]);
@@ -179,7 +295,7 @@ async function submitConversion(e){
   }catch(err){showError("formError",err.message);}
   finally{
     $("convertButton").disabled=false;
-    $("convertButton").querySelector("span").textContent="Convert now";
+    $("convertButton").querySelector("span").textContent=sourceType==="batch"?"Convert all videos":"Convert now";
   }
 }
 function resetConverter(){
@@ -233,6 +349,17 @@ document.addEventListener("DOMContentLoaded",()=>{
   document.querySelectorAll(".format-option").forEach(b=>b.addEventListener("click",()=>setFormat(b.dataset.format)));
   $("convertForm").addEventListener("submit",submitConversion);
   $("youtubeSourceButton").addEventListener("click",()=>setSource("youtube"));
+  $("batchSourceButton").addEventListener("click",()=>setSource("batch"));
+  $("batchUrls").addEventListener("input",updateBatchCount);
+  $("batchReset").addEventListener("click",resetBatch);
+  $("batchPasteButton").addEventListener("click",async()=>{
+    try{
+      const text=await navigator.clipboard.readText();
+      $("batchUrls").value=[$("batchUrls").value.trim(),text.trim()].filter(Boolean).join("\n");
+      updateBatchCount();
+      $("batchUrls").focus();
+    }catch{showError("formError","Clipboard access is unavailable. Paste multiple links manually.");}
+  });
   $("fileSourceButton").addEventListener("click",()=>setSource("file"));
   $("uploadInput").addEventListener("change",()=>{
     const file=$("uploadInput").files[0];
