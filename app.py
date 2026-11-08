@@ -139,8 +139,12 @@ def cleanup():
         for bucket in (quota,contact_quota):
             for ip in list(bucket):
                 bucket[ip]=[t for t in bucket[ip] if now-t<86400]
-                if not bucket[ip]: bucket.pop(ip,None)
-                STORE.put("quota" if bucket is quota else "contact_quota",ip,bucket.get(ip,[]))
+                kind="quota" if bucket is quota else "contact_quota"
+                if not bucket[ip]:
+                    bucket.pop(ip,None)
+                    STORE.drop(kind,ip)
+                else:
+                    STORE.put(kind,ip,bucket[ip])
     for k in expired: shutil.rmtree(MEDIA/k,ignore_errors=True)
     for bid in expired_batches: shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
     # Support submissions are private and have a defined retention window.
@@ -201,6 +205,7 @@ def janitor():
     while True:
         time.sleep(300)
         cleanup()
+        flush_contact_notifications()
 
 threading.Thread(target=janitor,daemon=True,name="media-cleanup").start()
 
@@ -221,6 +226,21 @@ class ContactRequest(BaseModel):
     name:str=Field(min_length=1,max_length=80)
     email:str=Field(min_length=3,max_length=254)
     message:str=Field(min_length=8,max_length=3000)
+
+
+class CopyrightRequest(BaseModel):
+    name:str=Field(min_length=2,max_length=120)
+    email:str=Field(min_length=3,max_length=254)
+    work:str=Field(min_length=8,max_length=1200)
+    material_url:str=Field(min_length=8,max_length=2048)
+    details:str=Field(min_length=8,max_length=3000)
+    signature:str=Field(min_length=2,max_length=120)
+    good_faith:bool=False
+    accuracy:bool=False
+
+
+class ContactStatusRequest(BaseModel):
+    status:Literal["new","reviewed","closed"]
 
 def quality_label(path:Path,fmt:str)->str|None:
     """Report the actual produced file's video height or MP3 bitrate."""
@@ -923,6 +943,20 @@ def admin_contacts(request:Request):
     return {"messages":STORE.messages(100)}
 
 
+@app.patch("/api/admin/contacts/{message_id}")
+def admin_update_contact(message_id:str,payload:ContactStatusRequest,request:Request):
+    require_admin(request)
+    if not re.fullmatch(r"[a-f0-9]{32}",message_id):
+        raise HTTPException(400,"Invalid message ID.")
+    existing=STORE.load("contact").get(message_id)
+    if not existing:
+        raise HTTPException(404,"Contact request not found.")
+    existing["status"]=payload.status
+    existing["updated"]=time.time()
+    STORE.put("contact",message_id,existing)
+    return {"updated":True,"status":payload.status}
+
+
 @app.delete("/api/admin/contacts/{message_id}")
 def admin_delete_contact(message_id:str,request:Request):
     require_admin(request)
@@ -943,6 +977,9 @@ def admin_overview(request:Request):
                 "disk_free_mb":round(disk.free/1024/1024),
                 "disk_used_mb":round(disk.used/1024/1024),
                 "contact_messages":len(STORE.messages(200)),
+                "unread_contacts":sum(m.get("status","new")=="new" for m in STORE.messages(200)),
+                "email_notifications_configured":bool(os.getenv("CONTACT_EMAIL") and
+                    os.getenv("SMTP_HOST") and os.getenv("SMTP_FROM")),
                 "durable":True,"max_active":MAX_ACTIVE,"max_queued":MAX_QUEUE_JOBS}
 
 
@@ -952,9 +989,75 @@ def admin_analytics(request:Request):
     return {"timezone":"UTC","daily":STORE.daily_summary(14)}
 
 
-@app.post("/api/contact")
-def contact(payload:ContactRequest,request:Request):
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",payload.email):
+CONTACT_DELIVERY_LOCK=threading.Lock()
+
+
+def mail_configured()->bool:
+    return all(os.getenv(k) for k in ("CONTACT_EMAIL","SMTP_HOST","SMTP_FROM"))
+
+
+def deliver_message(msg_id:str,record:dict)->bool:
+    """Send a stored support notification, only through a configured dedicated sender."""
+    if not mail_configured(): return False
+    from_addr=os.environ["SMTP_FROM"]
+    to_addr=os.environ["CONTACT_EMAIL"]
+    email=EmailMessage()
+    category=record.get("category","support")
+    email["Subject"]="ClipConvert "+("copyright report" if category=="copyright" else "support")+" "+msg_id[:8]
+    email["From"]=from_addr
+    email["To"]=to_addr
+    email["Reply-To"]=record.get("email","")
+    email.set_content(
+        "Reference: "+msg_id[:8]+"\nCategory: "+category+"\n"
+        "Name: "+record.get("name","")+"\n"
+        "Email: "+record.get("email","")+"\n\n"
+        +record.get("message",""))
+    port=int(os.getenv("SMTP_PORT","587"))
+    if port==465:
+        with smtplib.SMTP_SSL(os.environ["SMTP_HOST"],port,timeout=12) as client:
+            if os.getenv("SMTP_USER"):
+                client.login(os.environ["SMTP_USER"],os.getenv("SMTP_PASSWORD",""))
+            client.send_message(email)
+    else:
+        with smtplib.SMTP(os.environ["SMTP_HOST"],port,timeout=12) as client:
+            client.starttls()
+            if os.getenv("SMTP_USER"):
+                client.login(os.environ["SMTP_USER"],os.getenv("SMTP_PASSWORD",""))
+            client.send_message(email)
+    return True
+
+
+def flush_contact_notifications():
+    """Recover failed notifications after SMTP outages and future configuration."""
+    if not mail_configured() or not CONTACT_DELIVERY_LOCK.acquire(blocking=False):
+        return
+    try:
+        now=time.time()
+        messages=STORE.load("contact")
+        pending=sorted(((key,value) for key,value in messages.items()
+                        if not value.get("emailed")),key=lambda kv:kv[1].get("created",0))
+        for key,record in pending[:10]:
+            # Exponential backoff; no repeat notifications for successfully sent mail.
+            attempts=int(record.get("notification_attempts",0))
+            last=float(record.get("last_notification_attempt",0))
+            if last and now-last<min(86400,60*2**min(attempts,10)):
+                continue
+            record["notification_attempts"]=attempts+1
+            record["last_notification_attempt"]=now
+            STORE.put("contact",key,record)
+            try:
+                if deliver_message(key,record):
+                    record["emailed"]=True
+                    record["emailed_at"]=time.time()
+                    STORE.put("contact",key,record)
+            except Exception:
+                log.warning("Support notification delivery was unavailable; retained for retry")
+    finally:
+        CONTACT_DELIVERY_LOCK.release()
+
+
+def accept_contact_message(category:str,name:str,email:str,message:str,request:Request):
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",email):
         raise HTTPException(400,"Enter a valid email address.")
     now=time.time()
     ip=client_key(request)
@@ -965,30 +1068,35 @@ def contact(payload:ContactRequest,request:Request):
         contact_quota[ip].append(now)
         STORE.put("contact_quota",ip,contact_quota[ip])
     msg_id=uuid.uuid4().hex
-    # Store the submission even if outgoing SMTP is unavailable.
-    # Avoid dumping message contents, email addresses or IPs in server logs.
-    STORE.put("contact",msg_id,{"name":payload.name,"email":payload.email,
-        "message":payload.message,"created":now,"emailed":False})
-    recipient=os.getenv("CONTACT_EMAIL","")
-    smtp=os.getenv("SMTP_HOST","")
-    if recipient and smtp:
-        email=EmailMessage()
-        email["Subject"]="ClipConvert contact "+msg_id[:8]
-        email["To"]=recipient
-        email["From"]=os.getenv("SMTP_FROM",recipient)
-        email["Reply-To"]=payload.email
-        email.set_content("Name: "+payload.name+"\nEmail: "+payload.email+"\n\n"+payload.message)
-        try:
-            with smtplib.SMTP(smtp,int(os.getenv("SMTP_PORT","587")),timeout=12) as client:
-                client.starttls()
-                if os.getenv("SMTP_USER"):
-                    client.login(os.environ["SMTP_USER"],os.getenv("SMTP_PASSWORD",""))
-                client.send_message(email)
-            STORE.put("contact",msg_id,{"name":payload.name,"email":payload.email,
-                "message":payload.message,"created":now,"emailed":True})
-        except Exception:
-            log.warning("Contact email failed; submission is retained in the private inbox")
-    return {"received":True,"reference":msg_id[:8],"message":"Your message has been saved."}
+    STORE.put("contact",msg_id,{
+        "name":name,"email":email,"message":message,
+        "category":category,"status":"new","created":now,"emailed":False})
+    if mail_configured():
+        threading.Thread(target=flush_contact_notifications,
+                         daemon=True,name="support-notify").start()
+    return {"received":True,"reference":msg_id[:8],
+            "message":"Your report has been saved for review."}
+
+
+@app.post("/api/contact")
+def contact(payload:ContactRequest,request:Request):
+    return accept_contact_message("support",payload.name,payload.email,payload.message,request)
+
+
+@app.post("/api/copyright/report")
+def copyright_report(payload:CopyrightRequest,request:Request):
+    if not payload.good_faith or not payload.accuracy:
+        raise HTTPException(400,"Confirm the good-faith and accuracy statements.")
+    parsed=urlparse(payload.material_url.strip())
+    if parsed.scheme not in ("https","http") or not parsed.hostname:
+        raise HTTPException(400,"Enter the material URL using http:// or https://.")
+    message=("Copyright work: "+payload.work+
+             "\nMaterial URL: "+payload.material_url+
+             "\nDetails: "+payload.details+
+             "\nElectronic signature: "+payload.signature+
+             "\nGood-faith statement: affirmed"+
+             "\nAccuracy and authority statement: affirmed")
+    return accept_contact_message("copyright",payload.name,payload.email,message,request)
 
 
 @app.get("/admin",include_in_schema=False)
