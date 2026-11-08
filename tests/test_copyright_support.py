@@ -87,9 +87,9 @@ class CopyrightSupportTests(unittest.TestCase):
             fake.put("contact",msg_id,{
                 "name":"Example","email":"example@example.org","message":"Test support request",
                 "category":"support","status":"new","created":time.time(),"emailed":False})
-            with (patch.object(module,"STORE",fake),
-                  patch.object(module,"mail_configured",return_value=True),
-                  patch.object(module,"deliver_message",return_value=True)) as patch_send:
+            with patch.object(module,"STORE",fake), \
+                 patch.object(module,"mail_configured",return_value=True), \
+                 patch.object(module,"deliver_message",return_value=True) as patch_send:
                 module.flush_contact_notifications()
                 self.assertTrue(fake.load("contact")[msg_id]["emailed"])
                 self.assertEqual(patch_send.call_count,1)
