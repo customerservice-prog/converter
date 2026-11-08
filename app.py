@@ -185,8 +185,8 @@ def create(payload:ConvertRequest,request:Request):
             raise HTTPException(503,"The converter is busy. Please try again.")
         if len(quota[ip])>=DAILY_LIMIT: raise HTTPException(429,"Daily download limit reached.")
         quota[ip].append(now); jid=uuid.uuid4().hex
-        job={"id":jid,"state":"queued","progress":0,"message":"Starting…","title":"",
-             "thumbnail":None,"duration":None,"format":payload.format,"quality":payload.quality,
+        job={"id":jid,"state":"queued","progress":0,"message":"Starting…","title":"YouTube video",
+             "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","duration":None,"format":payload.format,"quality":payload.quality,
              "error":None,"created":now}
         jobs[jid]=job
     threading.Thread(target=convert,args=(jid,vid,payload.format,payload.quality),daemon=True).start()

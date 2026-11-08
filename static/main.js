@@ -110,6 +110,9 @@ function updateProgress(data){
   if(data.state==="error"){
     showError("jobError",data.error||"Conversion failed.");
     $("jobStatus").textContent="Unable to convert";
+    $("jobTitle").textContent=String(data.error||"").toLowerCase().includes("sign-in verification")
+      ?"YouTube access is restricted"
+      :"This conversion could not be completed";
     $("uploadFallbackButton").hidden=false;
   }
 }
