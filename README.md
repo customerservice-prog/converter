@@ -1,3 +1,84 @@
-# Converter
+# ClipConvert — MP3 / MP4 conversion
 
-A fast YouTube MP3/MP4 conversion app with a real backend, designed for authorized media only. Full setup and deployment instructions included in this repository.
+A complete original-design website modeled on the *workflow* of YTMP3: paste a YouTube link, choose MP3 or MP4, convert, and download. The project includes a real Python conversion backend, responsive frontend, browser extension source, bookmarklets, FAQ, thumbnail downloader, temporary job storage and basic abuse controls.
+
+**Independent app.** Not affiliated with ytmp3.gl, YouTube, or Google.
+
+## Features implemented
+
+- YouTube video, Shorts, share-link, embed and finished-livestream URL support.
+- MP3 audio at 128 / **192** / 320 kbps; MP4 video at **360p** / 720p / 1080p when compatible streams are available.
+- Up to 240 minutes for MP3, 30 minutes for MP4.
+- yt-dlp + yt-dlp-ejs + Node 22 challenge runtime + FFmpeg for actual conversion (no fake download button).
+- Server-side background jobs, live progress polling, video title/thumbnail, download links, error handling, 1-hour file lifetime and janitor cleanup every five minutes.
+- Rate limits, concurrent job caps, arbitrary-URL rejection, canonical YouTube URL validation, random download IDs, non-root Docker.
+- Responsive dark design, no login, paste button, keyboard navigation, basic accessibility.
+- /faq, /add-on, /bookmarklet, /thumbnail, /contact, /privacy, /copyright, /terms.
+- Browser extension source (Chromium and Firefox temporary add-on); deployment-domain setting in its popup.
+- Optional SMTP contact form (requires configuring environment variables).
+
+## Run locally
+
+Requires Python 3.12+, FFmpeg and Node 22+ in PATH.
+
+    python -m venv .venv
+    source .venv/bin/activate  # on Windows: .venv\Scripts\activate
+    pip install -r requirements.txt
+    uvicorn app:app --reload
+
+Open http://localhost:8000. Run tests:
+
+    python -m unittest discover -s tests -v
+
+If local Python lacks the Node runtime, YouTube conversions may fail. Docker bundles Node 22 and FFmpeg automatically.
+
+## Deploy (Railway or any Docker host)
+
+1. Create a Railway service from **customerservice-prog/converter** or deploy the Dockerfile on your Docker-capable host.
+2. Select the Dockerfile build. Bind the application's supplied PORT automatically.
+3. Set the service health check to **/api/health**. Ensure at least 1 GB available RAM, adequate CPU, disk, and bandwidth for media processing.
+4. Generate a public HTTPS domain and test a *video you own or have permission to download* end to end.
+5. Configure your operating contact details and SMTP environment before public release.
+
+Local Docker smoke test:
+
+    docker build -t clipconvert .
+    docker run --rm -p 8080:8080 clipconvert
+
+Open http://localhost:8080.
+
+## Environment
+
+| Variable | Default | Purpose |
+|---|---|---|
+| PORT | 8080 | Server listening port |
+| MAX_ACTIVE_JOBS | 2 | Concurrent conversions |
+| DAILY_LIMIT | 20 | Requests per IP per rolling day |
+| MAX_FILE_MB | 512 | Maximum output size in MB |
+| MEDIA_DIR | /tmp/converter-media | Temporary file directory |
+| FILE_TTL_SECONDS | 3600 | File retention in seconds |
+| CONTACT_EMAIL | unset | Form destination |
+| SMTP_HOST | unset | SMTP server; enables contact form |
+| SMTP_PORT | 587 | SMTP port (STARTTLS) |
+| SMTP_USER | unset | SMTP login |
+| SMTP_PASSWORD | unset | SMTP password |
+| SMTP_FROM | CONTACT_EMAIL | Verified sender |
+
+No keys or third-party conversion API subscriptions are needed. **Self-hosting still consumes server CPU, storage and bandwidth and may cost money.**
+
+## Browser extension
+
+Load the /extension directory as an unpacked developer extension in Chrome/Edge/Opera, or as a temporary Firefox extension. Enter the URL of your deployed site in the popup, then open a YouTube video and choose MP3 or MP4. Store publication requires separate approvals. Bookmarklets are generated for the deployed host at /bookmarklet.
+
+## Important production constraints
+
+- The build code is complete, but this repository is **not automatically a live hosted website**. GitHub Actions runs syntax/unit checks, *not* a real YouTube end-to-end download.
+- YouTube changes its extraction methods and may reject cloud datacenter addresses or restrict particular media. Not every video is guaranteed to work. The service does **not** bypass DRM, authentication, private-content restrictions or geographic access controls.
+- MP4 above 360p depends on source availability and compatible streams.
+- Jobs, quotas and media files are maintained on a single local instance. Scaling beyond one worker/instance requires Redis or another shared job queue, durable object storage and distributed rate limits. For public high traffic also add CDN, monitoring, resource caps, abuse handling and operational complaint workflows.
+- No ads or analytics are included in the application, but the Google Fonts request and the hosting platform may generate third-party access logs.
+- Users must have rights to download the submitted media and comply with laws and applicable platform terms. The legal pages are preliminary and must be customized by the operator before launch.
+
+## Testing
+
+Unit tests cover URL allowlisting and supported formats; GitHub Actions runs them on push. Check /api/health to verify FFmpeg is on the server, and check the actual browser conversion journey after deployment. Avoid claiming real YouTube conversion is verified until tested on the deployed server.

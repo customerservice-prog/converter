@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "ClipConvert Quick Convert",
+  "version": "1.0.0",
+  "description": "Send a YouTube video from your browser to your authorized ClipConvert site.",
+  "permissions": [
+    "tabs",
+    "storage"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
