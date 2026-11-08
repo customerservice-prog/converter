@@ -63,6 +63,7 @@ function getId(raw){
   }catch{return "";}
 }
 let format="mp3",pollTimer=null,batchTimer=null,sourceType="youtube";
+let jobPollErrors=0,batchPollErrors=0;
 function enteredBatchLinks(){
   return $("batchUrls").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
 }
@@ -102,7 +103,9 @@ async function jsonOrError(res){
   let json={};try{json=await res.json();}catch{}
   if(!res.ok){
     const reason=json.detail;
-    throw new Error(typeof reason==="string"?reason:"Request failed ("+res.status+").");
+    const error=new Error(typeof reason==="string"?reason:"Request failed ("+res.status+").");
+    error.status=res.status;
+    throw error;
   }
   return json;
 }
@@ -232,9 +235,25 @@ function updateProgress(data){
 async function poll(id){
   try{
     const data=await jsonOrError(await fetch("/api/jobs/"+encodeURIComponent(id),{cache:"no-store"}));
+    jobPollErrors=0;
+    if(data.state!=="error")showError("jobError","");
     updateProgress(data);
     if(data.state==="queued"||data.state==="working")pollTimer=setTimeout(()=>poll(id),1400);
-  }catch(e){showError("jobError",e.message);$("jobStatus").textContent="Could not check conversion";}
+  }catch(e){
+    if(e.status===404){
+      showError("jobError","This conversion has expired. Please start another.");
+      $("jobStatus").textContent="Download expired";
+      return;
+    }
+    jobPollErrors++;
+    if(jobPollErrors<=20){
+      $("jobStatus").textContent="Reconnecting to the converter…";
+      showError("jobError","A brief connection interruption occurred. Your saved conversion will resume when the server is reachable.");
+      pollTimer=setTimeout(()=>poll(id),Math.min(12000,2000+jobPollErrors*750));
+    }else{
+      showError("jobError","The server is unavailable. Your conversion was saved; refresh this page to check again.");
+    }
+  }
 }
 
 function makeBatchRow(item,index){
@@ -296,15 +315,29 @@ function updateBatchPanel(data){
 async function pollBatch(id){
   try{
     const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(id),{cache:"no-store"}));
+    batchPollErrors=0;
     updateBatchPanel(data);
     if(data.state==="working")batchTimer=setTimeout(()=>pollBatch(id),1500);
   }catch(error){
-    showError("batchError",error.message);
-    $("batchReset").hidden=false;
+    if(error.status===404){
+      showError("batchError","This batch has expired. Start another batch.");
+      $("batchReset").hidden=false;
+      return;
+    }
+    batchPollErrors++;
+    if(batchPollErrors<=20){
+      $("batchStatus").textContent="Reconnecting — your batch is saved…";
+      showError("batchError","Railway may be updating. We'll reconnect automatically without starting the videos again.");
+      batchTimer=setTimeout(()=>pollBatch(id),Math.min(12000,2000+batchPollErrors*750));
+    }else{
+      showError("batchError","The server is unavailable. Your batch is saved; refresh this page to check its progress.");
+      $("batchReset").hidden=false;
+    }
   }
 }
 function resetBatch(){
   if(batchTimer)clearTimeout(batchTimer);
+  batchPollErrors=0;
   $("batchPanel").hidden=true;
   $("convertForm").hidden=false;
   $("batchUrls").value="";
@@ -398,6 +431,7 @@ async function submitConversion(e){
 }
 function resetConverter(){
   if(pollTimer)clearTimeout(pollTimer);
+  jobPollErrors=0;
   $("convertForm").hidden=false;$("jobPanel").hidden=true;
   $("videoUrl").value="";$("uploadInput").value="";$("uploadFileName").textContent="Choose a file from your device";$("rightsCheck").checked=false;
   showError("formError","");window.scrollTo({top:0,behavior:"smooth"});$("videoUrl").focus();
