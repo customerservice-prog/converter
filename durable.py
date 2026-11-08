@@ -8,6 +8,7 @@ import os
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 
@@ -26,6 +27,12 @@ class StateStore:
                 PRIMARY KEY(kind,id)
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS records_by_kind ON records(kind)")
+            db.execute("""CREATE TABLE IF NOT EXISTS daily_counters(
+                day TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                amount INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(day,metric)
+            )""")
             db.commit()
 
     def _connection(self):
@@ -69,6 +76,29 @@ class StateStore:
             except (ValueError, TypeError):
                 pass
         return messages
+
+    def increment(self, metric, amount=1):
+        if not isinstance(metric,str) or len(metric)>96:
+            raise ValueError("Invalid metric name")
+        day=datetime.now(timezone.utc).date().isoformat()
+        with self.lock, self._connection() as db:
+            db.execute(
+                """INSERT INTO daily_counters(day,metric,amount) VALUES(?,?,?)
+                   ON CONFLICT(day,metric) DO UPDATE SET amount=amount+excluded.amount""",
+                (day,metric,int(amount)))
+            db.commit()
+
+    def daily_summary(self, days=14):
+        days=max(1,min(31,int(days)))
+        threshold=(datetime.now(timezone.utc).date()-timedelta(days=days-1)).isoformat()
+        with self.lock, self._connection() as db:
+            rows=db.execute(
+                "SELECT day,metric,amount FROM daily_counters WHERE day >= ? ORDER BY day",
+                (threshold,)).fetchall()
+        result={}
+        for day,metric,value in rows:
+            result.setdefault(day,{})[metric]=int(value)
+        return result
 
 
 def database_path(media):
