@@ -36,7 +36,8 @@
             <div class="card-heading"><div><div class="card-kicker">START HERE</div><h2>Convert a video</h2></div><div class="card-heading-tag"><span class="status-dot"></span> Online tool</div></div>
             <form id="convertForm" novalidate>
               <div class="source-tabs" role="group" aria-label="Choose source">
-                <button id="youtubeSourceButton" type="button" class="source-tab active" aria-pressed="true">↗ YouTube link</button>
+                <button id="youtubeSourceButton" type="button" class="source-tab active" aria-pressed="true">↗ Single link</button>
+                <button id="batchSourceButton" type="button" class="source-tab" aria-pressed="false">▦ Multiple links</button>
                 <button id="fileSourceButton" type="button" class="source-tab" aria-pressed="false">↑ Upload file</button>
               </div>
               <div id="urlSourceArea">
@@ -46,6 +47,15 @@
                 <input type="url" id="videoUrl" name="url" placeholder="Paste a YouTube link here…" autocomplete="url" spellcheck="false" required>
                 <button class="paste-button" type="button" id="pasteButton"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="5" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M9 5V3h6v2" stroke="currentColor" stroke-width="1.8"/></svg> Paste</button>
               </div>
+              </div>
+              <div id="batchSourceArea" hidden>
+                <label for="batchUrls" class="field-label">Paste YouTube links — one per line</label>
+                <textarea id="batchUrls" class="batch-textarea" rows="6" spellcheck="false" placeholder="https://youtu.be/VIDEO_1&#10;https://youtu.be/VIDEO_2&#10;https://youtu.be/VIDEO_3"></textarea>
+                <div class="batch-input-info">
+                  <span id="batchCount">0 / 10 video links</span>
+                  <button id="batchPasteButton" type="button" class="batch-paste">Paste multiple links</button>
+                </div>
+                <p class="source-hint">Convert up to 10 different YouTube videos in one batch. Each video gets its own organized folder in one ZIP.</p>
               </div>
               <div id="uploadSourceArea" hidden>
                 <label class="field-label" for="uploadInput">Choose your video or audio file</label>
@@ -64,6 +74,17 @@
               <button class="convert-button" id="convertButton" type="submit"><span>Convert now</span><span class="convert-arrow" aria-hidden="true">↗</span></button>
               <div class="form-footnote"><span><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4 10 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> No account</span><span>✦ Free to use</span><span>♧ Mobile friendly</span></div>
             </form>
+            <section id="batchPanel" class="job-panel batch-panel" aria-live="polite" hidden>
+              <div class="job-label">BATCH CONVERSION</div>
+              <h3 id="batchStatus" class="batch-title">Preparing your videos…</h3>
+              <p id="batchSummary" class="batch-summary">Checking the links</p>
+              <div class="progress-track" role="progressbar" aria-label="Batch progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchProgressTrack"><span id="batchProgressFill"></span></div>
+              <div id="batchRows" class="batch-results"></div>
+              <p id="batchError" class="form-error" role="alert" hidden></p>
+              <a id="batchDownload" class="download-button" href="#" hidden>↓ Download all videos (.zip)</a>
+              <p class="batch-note">One organized ZIP, with a separate named folder for each successful video. You can also download individual results above.</p>
+              <button id="batchReset" type="button" class="start-over" hidden>↶ Convert another batch</button>
+            </section>
             <div id="jobPanel" class="job-panel" aria-live="polite" hidden>
               <div class="job-media"><img id="jobThumbnail" src="" alt="Video thumbnail"><div><div class="job-label">YOUR CONVERSION</div><h3 id="jobTitle">Preparing your video…</h3><p id="jobDetail">Checking the link</p></div></div>
               <div class="progress-top"><strong id="jobStatus">Working on it…</strong><span id="jobPercent">0%</span></div>
