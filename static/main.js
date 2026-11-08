@@ -113,7 +113,9 @@ function updateProgress(data){
     (Number(data.quality)===0?"Best available (Auto)":
       String(data.quality)+(data.format==="mp3"?" kbps":"p"));
   $("jobDetail").textContent=(data.format||format).toUpperCase()+" · "+displayedQuality+
-    (data.duration?" · "+Math.ceil(data.duration/60)+" min":"");
+    (data.duration?" · "+Math.ceil(data.duration/60)+" min":"")+
+    (data.state==="ready" && data.format==="mp4" && data.audio_codec==="aac"
+      ?" · AAC audio verified":"");
   if(data.thumbnail){$("jobThumbnail").src=data.thumbnail;$("jobThumbnail").hidden=false;}
   else $("jobThumbnail").hidden=true;
   const pct=Number(data.progress||0);
@@ -161,7 +163,7 @@ function makeBatchRow(item,index){
   info.appendChild(title);
   const description=document.createElement("span");
   description.textContent=item.state==="ready"
-    ?"Ready · "+(item.actual_quality||"Best available")
+    ?"Ready · "+(item.actual_quality||"Best available")+(item.audio_codec==="aac"?" · AAC audio verified":"")
     :item.state==="error"?"Failed · "+(item.error||"Unknown error")
     :item.state==="working"?(item.message||"Converting")+" · "+(item.progress||0)+"%"
     :"Queued — waiting for an available conversion slot";
