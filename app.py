@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json
+import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile
 from collections import defaultdict
 from email.message import EmailMessage
 from pathlib import Path
@@ -52,7 +52,9 @@ def video_id(raw:str)->str:
 def public(job):
     fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","error")
     data={key:job.get(key) for key in fields}
-    if job["state"]=="ready": data["download_url"]="/api/download/"+job["id"]
+    if job["state"]=="ready":
+        data["download_url"]="/api/download/"+job["id"]
+        data["folder_url"]="/api/download/"+job["id"]+"/folder"
     return data
 
 def change(jid,**kwargs):
@@ -134,19 +136,18 @@ def convert(jid,vid,fmt,quality):
         change(jid,state="working",progress=3,message="Checking video…")
         opts={"source_address":"::" if os.getenv("PREFER_IPV6")=="1" else "0.0.0.0","js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
               "cachedir":False,"socket_timeout":20,"retries":2,"fragment_retries":2,
+              "concurrent_fragment_downloads":min(8,max(1,int(os.getenv("DOWNLOAD_FRAGMENTS","6")))),
               "outtmpl":str(directory/"%(id)s.%(ext)s"),"restrictfilenames":True}
-        # Try a small, bounded selection of ordinary, public YouTube playback
-        # clients. These do not authorize content that requires a sign-in, and
-        # they cannot guarantee access from a datacenter IP address.
+        # Resolve formats once and reuse the resulting download URLs.
         clients_to_try=(None, ("tv", "web_safari"), ("web_embedded",), ("android_vr",))
         for index,clients in enumerate(clients_to_try):
-            check_opts={**opts,"skip_download":True}
+            check_opts={**opts,**youtube_output_options(fmt,quality)}
             if clients:
                 check_opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
                 change(jid,message="Checking available video formats…")
             try:
-                with yt_dlp.YoutubeDL(check_opts) as ydl:
-                    info=ydl.extract_info(url,download=False)
+                with yt_dlp.YoutubeDL(check_opts) as extractor:
+                    info=extractor.extract_info(url,download=False)
                 if clients:
                     opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
                 break
@@ -179,7 +180,9 @@ def convert(jid,vid,fmt,quality):
             elif x.get("status")=="finished":
                 change(jid,progress=90,message="Finalizing your file…")
         options={**opts,"progress_hooks":[progress],**youtube_output_options(fmt,quality)}
-        with yt_dlp.YoutubeDL(options) as ydl: ydl.download([url])
+        # process_info downloads the selected formats without repeating extraction.
+        with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.process_info(info)
         files=sorted(directory.glob("*."+fmt))
         if not files: raise ValueError("No compatible output is available for this video.")
         if files[0].stat().st_size>FILE_LIMIT: raise ValueError("Converted file is too large.")
@@ -224,7 +227,7 @@ def create(payload:ConvertRequest,request:Request):
         if len(quota[ip])>=DAILY_LIMIT: raise HTTPException(429,"Daily download limit reached.")
         quota[ip].append(now); jid=uuid.uuid4().hex
         job={"id":jid,"state":"queued","progress":0,"message":"Starting…","title":"YouTube video",
-             "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
+             "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","video_id":vid,"duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
              "error":None,"created":now}
         jobs[jid]=job
     threading.Thread(target=convert,args=(jid,vid,payload.format,payload.quality),daemon=True).start()
@@ -397,6 +400,53 @@ def download(jid:str):
         name=(re.sub(r"[^a-zA-Z0-9._ -]","",title).strip()[:90] or "download")+"."+job["format"]
     if not file.is_file(): raise HTTPException(404,"The file is no longer available.")
     return FileResponse(file,media_type="audio/mpeg" if job["format"]=="mp3" else "video/mp4",filename=name)
+
+
+def safe_media_name(value:str)->str:
+    """Cross-platform filename that cannot create ZIP path traversal entries."""
+    name=re.sub(r'[<>:"/\\|?*\x00-\x1f]',"_",str(value or ""))
+    name=re.sub(r"\s+"," ",name).strip(" .")[:90]
+    return name or "Video"
+
+
+@app.get("/api/download/{jid}/folder")
+def download_folder(jid:str):
+    """One ZIP per video containing a named folder and the unmodified output."""
+    cleanup()
+    with mutex:
+        job=jobs.get(jid)
+        if not job or job["state"]!="ready":
+            raise HTTPException(404,"The folder download has expired.")
+        media=Path(job["file"])
+        title=safe_media_name(job.get("title") or "Video")
+        ext=job["format"]
+        quality=job.get("actual_quality") or "Unknown"
+        vid=job.get("video_id")
+        jobdir=MEDIA/jid
+        archive=jobdir/"organized.zip"
+        folder=title+" - "+jid[:8]
+        if not media.is_file():
+            raise HTTPException(404,"The converted media is no longer available.")
+        if not archive.is_file():
+            temporary=jobdir/("organized-"+uuid.uuid4().hex+".tmp")
+            try:
+                details=(
+                    f"Title: {job.get('title') or 'Video'}\n"
+                    f"Format: {ext.upper()}\n"
+                    f"Actual quality: {quality}\n"
+                    f"Source: {'https://www.youtube.com/watch?v='+vid if vid else 'Uploaded media'}\n"
+                    "Created by ClipConvert\n"
+                )
+                with zipfile.ZipFile(temporary,"w",compression=zipfile.ZIP_STORED,
+                                     allowZip64=True) as z:
+                    z.write(media,arcname=f"{folder}/{title}.{ext}")
+                    z.writestr(f"{folder}/Video Info.txt",details)
+                temporary.replace(archive)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
+    return FileResponse(archive,media_type="application/zip",filename=folder+".zip")
+
 
 @app.get("/api/thumbnail/{vid}")
 def thumbnail(vid:str):
