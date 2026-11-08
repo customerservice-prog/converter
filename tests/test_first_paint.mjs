@@ -8,7 +8,17 @@ const screens=[{name:'desktop', width:1366,height:900},{name:'mobile',width:390,
 try {
   for(const viewport of screens){
     const page=await browser.newPage({viewport:{width:viewport.width,height:viewport.height}});
-    const response=await page.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:60000});
+    let response,releaseReady=false;
+    for(let attempt=0;attempt<50;attempt++){
+      response=await page.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:60000});
+      if(response?.status()===200){
+        const version=await page.locator('link[href*="/assets/site.css"]').getAttribute('href').catch(()=>null);
+        if(version?.includes('v=20261108-v5')){releaseReady=true;break;}
+      }
+      if(attempt%6===0)console.log('Waiting for matching deployed UI release',viewport.name,attempt);
+      await page.waitForTimeout(5000);
+    }
+    assert.equal(releaseReady,true,'The current UI release did not reach production');
     assert.equal(response?.status(),200,viewport.name+' homepage status');
     await page.locator('#converter .converter-card').waitFor({state:'visible'});
     const observed=await page.evaluate(()=>{
