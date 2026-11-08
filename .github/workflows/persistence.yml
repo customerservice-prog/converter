@@ -1,0 +1,99 @@
+name: Container restart persistence
+on:
+  push:
+    paths:
+      - '.github/workflows/persistence.yml'
+      - 'app.py'
+      - 'durable.py'
+      - 'Dockerfile'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  restart-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production Docker image
+        run: docker build -t clipconvert-persistence .
+      - name: Boot app with a mounted volume and upload test media
+        run: |
+          mkdir -p persisted-state
+          docker run -d --name clipconvert-before -p 8091:8080 \
+            -e ADMIN_TOKEN=test-secret \
+            -v "$PWD/persisted-state:/data" clipconvert-persistence
+          python - <<'PY'
+          import io,json,struct,time,urllib.request,wave
+          root="http://127.0.0.1:8091"
+          for attempt in range(45):
+              try:
+                  with urllib.request.urlopen(root+"/api/health",timeout=3) as resp:
+                      data=json.load(resp)
+                      assert data["storage_ready"],data
+                      break
+              except Exception:
+                  if attempt==44:raise
+                  time.sleep(1)
+          media=io.BytesIO()
+          with wave.open(media,"wb") as wf:
+              wf.setnchannels(1)
+              wf.setsampwidth(2)
+              wf.setframerate(44100)
+              wf.writeframes(b"".join(struct.pack("<h",i%120) for i in range(44100)))
+          boundary="ClipConvertRestartTest"
+          bits=[]
+          for k,v in {"format":"mp3","quality":"128","rights_confirmed":"true"}.items():
+              bits.append(("--"+boundary+"\r\nContent-Disposition: form-data; name=\""+k+"\"\r\n\r\n"+v+"\r\n").encode())
+          bits.extend([("--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.wav\"\r\nContent-Type: audio/wav\r\n\r\n").encode(),media.getvalue(),b"\r\n",("--"+boundary+"--\r\n").encode()])
+          data=b"".join(bits)
+          req=urllib.request.Request(root+"/api/upload",data=data,
+              headers={"Content-Type":"multipart/form-data; boundary="+boundary})
+          with urllib.request.urlopen(req,timeout=45) as response:
+              job=json.load(response)
+          jid=job["id"]
+          for attempt in range(100):
+              with urllib.request.urlopen(root+"/api/jobs/"+jid,timeout=4) as response:
+                  job=json.load(response)
+              if job["state"] in ("ready","error"):break
+              time.sleep(.2)
+          assert job["state"]=="ready",job
+          with urllib.request.urlopen(root+job["download_url"],timeout=15) as response:
+              before=response.read()
+          assert len(before)>3000
+          open("/tmp/clipconvert-job-id","w").write(jid)
+          open("/tmp/clipconvert-job-sha","w").write(__import__("hashlib").sha256(before).hexdigest())
+          print("BEFORE_RESTART",jid,len(before),flush=True)
+          PY
+      - name: Remove first container and start same app against existing volume
+        run: |
+          docker rm -f clipconvert-before
+          docker run -d --name clipconvert-after -p 8091:8080 \
+            -e ADMIN_TOKEN=test-secret \
+            -v "$PWD/persisted-state:/data" clipconvert-persistence
+          python - <<'PY'
+          import hashlib,json,time,urllib.request
+          root="http://127.0.0.1:8091"
+          jid=open("/tmp/clipconvert-job-id").read().strip()
+          for attempt in range(45):
+              try:
+                  with urllib.request.urlopen(root+"/api/jobs/"+jid,timeout=3) as response:
+                      job=json.load(response)
+                      assert job["state"]=="ready",job
+                      break
+              except Exception:
+                  if attempt==44:raise
+                  time.sleep(1)
+          with urllib.request.urlopen(root+job["download_url"],timeout=15) as response:
+              media=response.read()
+          assert hashlib.sha256(media).hexdigest()==open("/tmp/clipconvert-job-sha").read()
+          with urllib.request.urlopen(root+job["folder_url"],timeout=15) as response:
+              archive=response.read()
+          assert archive.startswith(b"PK"),"ZIP unavailable after restart"
+          print("RESTART_PERSISTENCE_PASSED",jid,len(media),flush=True)
+          PY
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          docker logs clipconvert-before 2>&1 || true
+          docker logs clipconvert-after 2>&1 || true
