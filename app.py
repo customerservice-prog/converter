@@ -93,7 +93,7 @@ def convert(jid,vid,fmt,quality):
     url="https://www.youtube.com/watch?v="+vid
     try:
         change(jid,state="working",progress=3,message="Checking video…")
-        opts={"js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
+        opts={"source_address":"::" if os.getenv("PREFER_IPV6")=="1" else "0.0.0.0","js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
               "cachedir":False,"socket_timeout":20,"retries":2,"fragment_retries":2,
               "outtmpl":str(directory/"%(id)s.%(ext)s"),"restrictfilenames":True}
         # Try a small, bounded selection of ordinary, public YouTube playback
