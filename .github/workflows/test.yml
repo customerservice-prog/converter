@@ -13,8 +13,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt httpx
+      - name: Install FFmpeg and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt httpx
       - name: Check backend and frontend syntax
         run: |
           python -m compileall -q app.py
