@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from email.message import EmailMessage
 from pathlib import Path
@@ -24,7 +25,9 @@ ID=re.compile(r"^[A-Za-z0-9_-]{11}$")
 HOSTS={"youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"}
 DURATION_LIMIT={"mp3":14400,"mp4":1800}
 QUALITIES={"mp3":(0,128,192,320),"mp4":(0,360,720,1080,1440,2160)}
-jobs={}; quota=defaultdict(list); contact_quota=defaultdict(list); mutex=threading.RLock()
+jobs={}; batches={}; quota=defaultdict(list); contact_quota=defaultdict(list); mutex=threading.RLock()
+MAX_BATCH_LINKS=min(10,max(2,int(os.getenv("MAX_BATCH_LINKS","10"))))
+conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
 log=logging.getLogger("converter")
 app=FastAPI(title="Converter API",docs_url=None,redoc_url=None)
 app.mount("/assets",StaticFiles(directory=ROOT/"static"),name="assets")
@@ -66,11 +69,15 @@ def cleanup():
     with mutex:
         expired=[k for k,j in jobs.items() if j["state"] in ("ready","error") and now-j.get("ended",now)>TTL]
         for k in expired: jobs.pop(k,None)
+        expired_batches=[bid for bid,b in batches.items()
+            if b["state"] in ("complete","partial","failed") and now-b.get("ended",now)>TTL]
+        for bid in expired_batches: batches.pop(bid,None)
         for bucket in (quota,contact_quota):
             for ip in list(bucket):
                 bucket[ip]=[t for t in bucket[ip] if now-t<86400]
                 if not bucket[ip]: bucket.pop(ip,None)
     for k in expired: shutil.rmtree(MEDIA/k,ignore_errors=True)
+    for bid in expired_batches: shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
 
 def janitor():
     while True:
@@ -84,6 +91,13 @@ class ConvertRequest(BaseModel):
     format:Literal["mp3","mp4"]="mp3"
     quality:int=0
     rights_confirmed:bool=False
+
+class BatchRequest(BaseModel):
+    links:list[str]=Field(min_length=2,max_length=MAX_BATCH_LINKS)
+    format:Literal["mp3","mp4"]="mp3"
+    quality:int=0
+    rights_confirmed:bool=False
+
 
 class ContactRequest(BaseModel):
     name:str=Field(min_length=1,max_length=80)
@@ -211,7 +225,165 @@ async def headers(request:Request,call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail","best_quality_auto","organized_folders","parallel_fragments"]}
+    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail","best_quality_auto","organized_folders","parallel_fragments","batch_links"]}
+
+
+def run_queued_conversion(jid:str,vid:str,fmt:str,quality:int)->None:
+    # Shared slots keep individual and batch jobs within the same CPU limit.
+    with conversion_slots:
+        convert(jid,vid,fmt,quality)
+
+
+def run_queued_upload(jid:str,extension:str,name:str,fmt:str,quality:int)->None:
+    with conversion_slots:
+        convert_upload(jid,extension,name,fmt,quality)
+
+
+def public_batch(batch:dict)->dict:
+    with mutex:
+        items=[public(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
+        done=sum(i["state"] in ("ready","error") for i in items)
+        successes=sum(i["state"]=="ready" for i in items)
+        result={"id":batch["id"],"state":batch["state"],"format":batch["format"],
+                "quality":batch["quality"],"total":len(batch["job_ids"]),
+                "processed":done,"succeeded":successes,"failed":sum(i["state"]=="error" for i in items),
+                "items":items,"message":batch.get("message",""),
+                "download_url":None}
+        if batch["state"] in ("complete","partial") and successes:
+            result["download_url"]="/api/batches/"+batch["id"]+"/download"
+        return result
+
+
+def convert_batch(batch_id:str)->None:
+    """Process a bounded batch, preserving individual job and failure status."""
+    with mutex:
+        batch=batches.get(batch_id)
+        if not batch:return
+        batch["state"]="working"
+        ids=list(batch["job_ids"])
+        fmt=batch["format"]
+        quality=batch["quality"]
+        pairs=[(jid,jobs[jid]["video_id"]) for jid in ids]
+    try:
+        with ThreadPoolExecutor(max_workers=min(2,MAX_ACTIVE),thread_name_prefix="clip-batch") as executor:
+            futures=[executor.submit(run_queued_conversion,jid,vid,fmt,quality)
+                     for jid,vid in pairs]
+            for future in as_completed(futures):
+                future.result()
+    except Exception:
+        log.exception("Batch conversion crashed")
+    finally:
+        with mutex:
+            now=time.time()
+            batch=batches.get(batch_id)
+            if not batch:return
+            for jid in ids:
+                item=jobs.get(jid)
+                if item:
+                    if item["state"] not in ("ready","error"):
+                        item.update(state="error",error="This conversion stopped unexpectedly.",
+                                    progress=0,message="Conversion failed")
+                    item["ended"]=now
+            success=sum(jobs[jid]["state"]=="ready" for jid in ids if jid in jobs)
+            batch["state"]="complete" if success==len(ids) else "partial" if success else "failed"
+            batch["ended"]=now
+            batch["message"]=f"{success} of {len(ids)} videos converted"
+
+
+@app.post("/api/batches",status_code=202)
+def create_batch(payload:BatchRequest,request:Request):
+    if not payload.rights_confirmed:
+        raise HTTPException(400,"Confirm you have permission to download all videos in this batch.")
+    if payload.quality not in QUALITIES[payload.format]:
+        raise HTTPException(400,"Choose a supported quality.")
+    # Reject invalid inputs atomically and deduplicate identical video IDs.
+    ids=[]
+    for link in payload.links:
+        try: vid=video_id(link)
+        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+        if vid not in ids: ids.append(vid)
+    if len(ids)<2:
+        raise HTTPException(400,"Add at least two different YouTube videos.")
+    cleanup()
+    ip=request.client.host if request.client else "unknown"
+    now=time.time()
+    with mutex:
+        if len(quota[ip])+len(ids)>DAILY_LIMIT:
+            raise HTTPException(429,"The batch exceeds the remaining daily conversion limit.")
+        if any(b["state"]=="working" for b in batches.values()):
+            raise HTTPException(503,"Another batch is already processing. Try again after it finishes.")
+        if sum(j["state"] in ("working","receiving") for j in jobs.values())>=MAX_ACTIVE:
+            raise HTTPException(503,"The converter is busy. Try again shortly.")
+        bid=uuid.uuid4().hex
+        jids=[]
+        for vid in ids:
+            jid=uuid.uuid4().hex
+            jids.append(jid)
+            jobs[jid]={"id":jid,"state":"queued","progress":0,"message":"Waiting in batch…",
+                       "title":"YouTube video","video_id":vid,
+                       "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg",
+                       "duration":None,"format":payload.format,"quality":payload.quality,
+                       "actual_quality":None,"error":None,"created":now,"batch_id":bid}
+        quota[ip].extend([now]*len(ids))
+        batches[bid]={"id":bid,"state":"working","created":now,
+                      "message":"Preparing batch…","job_ids":jids,
+                      "format":payload.format,"quality":payload.quality}
+    threading.Thread(target=convert_batch,args=(bid,),daemon=True,
+                     name="batch-"+bid[:8]).start()
+    return public_batch(batches[bid])
+
+
+@app.get("/api/batches/{bid}")
+def get_batch(bid:str):
+    cleanup()
+    with mutex:
+        batch=batches.get(bid)
+        if not batch: raise HTTPException(404,"This batch has expired or does not exist.")
+        return public_batch(batch)
+
+
+@app.get("/api/batches/{bid}/download")
+def download_batch(bid:str):
+    cleanup()
+    with mutex:
+        batch=batches.get(bid)
+        if not batch or batch["state"] not in ("complete","partial"):
+            raise HTTPException(404,"The batch archive is not ready or has expired.")
+        items=[jobs[jid] for jid in batch["job_ids"] if jid in jobs]
+        ready=[(index,j) for index,j in enumerate(items,1)
+               if j["state"]=="ready" and Path(j["file"]).is_file()]
+        if not ready: raise HTTPException(404,"No completed files are available.")
+        folder=MEDIA/("batch-"+bid)
+        folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+        archive=folder/"all-videos.zip"
+        if not archive.exists():
+            temporary=folder/("build-"+uuid.uuid4().hex+".tmp")
+            try:
+                lines=[f"Batch results: {len(ready)} of {len(items)} videos ready",""]
+                with zipfile.ZipFile(temporary,"w",compression=zipfile.ZIP_STORED,
+                                     allowZip64=True) as z:
+                    for index,job in enumerate(items,1):
+                        title=safe_media_name(job.get("title") or "YouTube video")
+                        if job["state"]=="ready" and Path(job["file"]).is_file():
+                            dirname=f"{index:02d} - {title}"
+                            media=Path(job["file"])
+                            z.write(media,arcname=f"{dirname}/{title}.{job['format']}")
+                            detail=(f"Title: {job.get('title') or 'YouTube video'}\n"
+                                    f"Format: {job['format'].upper()}\n"
+                                    f"Quality: {job.get('actual_quality') or 'Unknown'}\n"
+                                    f"Source: https://www.youtube.com/watch?v={job['video_id']}\n")
+                            z.writestr(f"{dirname}/Video Info.txt",detail)
+                            lines.append(f"{index:02d}. OK — {job.get('title') or title}")
+                        else:
+                            lines.append(f"{index:02d}. FAILED — {job.get('title') or title}: {job.get('error') or 'File unavailable'}")
+                    z.writestr("Batch Results.txt","\n".join(lines)+"\n")
+                temporary.replace(archive)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
+    return FileResponse(archive,media_type="application/zip",
+                        filename="ClipConvert-"+bid[:8]+"-all-videos.zip")
+
 
 @app.post("/api/jobs",status_code=202)
 def create(payload:ConvertRequest,request:Request):
@@ -230,7 +402,7 @@ def create(payload:ConvertRequest,request:Request):
              "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","video_id":vid,"duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
              "error":None,"created":now}
         jobs[jid]=job
-    threading.Thread(target=convert,args=(jid,vid,payload.format,payload.quality),daemon=True).start()
+    threading.Thread(target=run_queued_conversion,args=(jid,vid,payload.format,payload.quality),daemon=True).start()
     return public(job)
 
 def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) -> None:
@@ -377,7 +549,7 @@ async def upload_media(
     finally:
         await file.close()
     change(jid,state="queued",progress=5,message="Processing upload…")
-    thread=threading.Thread(target=convert_upload,
+    thread=threading.Thread(target=run_queued_upload,
         args=(jid,extension,Path(name).stem[:100] or "Uploaded media",format,quality),daemon=True)
     thread.start()
     return public(jobs[jid])
