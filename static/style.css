@@ -25,3 +25,32 @@
 .folder-download-button{display:flex;align-items:center;justify-content:center;text-align:center;width:100%;border:1px solid #789dff;background:#1c3053;color:#e9f0ff;border-radius:11px;padding:15px 20px;margin-top:11px;font-size:13px;font-weight:800;transition:background .2s}
 .folder-download-button:hover{background:#2a4674}
 .folder-help{font-size:11px;color:#879aba;line-height:1.6;margin:10px 5px 0;text-align:center}
+
+/* Multi-link batch conversion */
+.source-tabs{gap:5px}
+.source-tab{padding:11px 6px;font-size:11px;white-space:nowrap}
+.batch-textarea{display:block;width:100%;min-height:150px;resize:vertical;background:#0c1427;color:#edf3ff;border:1px solid #44516d;border-radius:12px;padding:15px;font-size:12px;line-height:1.8;outline:none}
+.batch-textarea:focus-visible{outline:2px solid #88a9ff;outline-offset:2px}
+.batch-textarea::placeholder{color:#7589a8}
+.batch-input-info{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;color:#a1b0ca;margin-top:9px}
+.batch-paste{background:#213558;color:#dce8ff;border:1px solid #465c7d;border-radius:8px;font-size:11px;font-weight:800;padding:9px 12px}
+.batch-paste:hover{background:#314a73}
+.batch-panel .job-label{margin-bottom:5px}
+.batch-title{font-family:'Space Grotesk',sans-serif;font-size:22px;margin:5px 0 4px}
+.batch-summary{color:#9baecb;font-size:12px;margin:0 0 18px}
+.batch-results{display:grid;gap:9px;max-height:425px;overflow:auto;margin:15px 0 21px;padding-right:3px}
+.batch-result{display:flex;align-items:center;gap:12px;background:#0c162b;border:1px solid #30405e;border-radius:10px;padding:10px}
+.batch-thumb{width:66px;aspect-ratio:16/9;object-fit:cover;border-radius:6px;background:#1b2c49}
+.batch-result-info{min-width:0;flex:1;display:flex;flex-direction:column;gap:5px}
+.batch-result-info strong{font-size:12px;line-height:1.3;overflow-wrap:anywhere}
+.batch-result-info span{color:#92a5c1;font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+.batch-result-info .batch-result-error{color:#ffabab}
+.batch-item-download{border:1px solid #607cb2;border-radius:7px;padding:8px 9px;color:#d3e3ff;font-size:11px;font-weight:800;white-space:nowrap}
+.batch-item-download:hover{background:#273c65}
+.batch-note{color:#8195b5;font-size:11px;line-height:1.65;margin:11px 0}
+@media(max-width:520px){
+ .source-tab{font-size:10px;letter-spacing:-.1px;padding:9px 3px}
+ .batch-thumb{width:52px}
+ .batch-result{gap:8px;padding:8px}
+ .batch-item-download{font-size:10px;padding:7px 6px}
+}
