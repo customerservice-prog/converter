@@ -108,11 +108,12 @@ function updateProgress(data){
   $("jobPercent").textContent=pct+"%";$("progressFill").style.width=pct+"%";$("progressTrack").setAttribute("aria-valuenow",String(pct));
   if(data.state==="ready"){
     $("jobPercent").textContent="100%";
-    $("downloadButton").href=data.download_url;
-    $("downloadButton").textContent="↓ Download "+data.format.toUpperCase()+" file (fastest)";
+    $("downloadButton").href=data.folder_url || data.download_url;
+    $("downloadButton").textContent="↓ Download "+data.format.toUpperCase()+" folder (.zip)";
     $("downloadButton").hidden=false;
-    $("folderDownload").href=data.folder_url;
-    $("folderDownload").hidden=!data.folder_url;
+    $("folderDownload").href=data.download_url;
+    $("folderDownload").hidden=!data.download_url;
+    $("folderDownload").textContent="↓ Download "+data.format.toUpperCase()+" file only (fastest)";
     $("jobStatus").textContent="Your file is ready!";
   }
   if(data.state==="error"){
