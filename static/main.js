@@ -32,11 +32,11 @@ const routes={
  },
  "/contact":{
    eyebrow:"SAY HELLO",title:"Contact us",subtitle:"Questions, error reports or rights concerns? Send us a message.",
-   html:'<article class="info-card"><form id="contactForm" class="simple-form"><label>Name<input id="contactName" maxlength="80" required></label><label>Email<input id="contactEmail" type="email" maxlength="254" required></label><label>Message<textarea id="contactMessage" minlength="8" maxlength="3000" placeholder="For a conversion error, include the video link and what went wrong." required></textarea></label><p class="muted">This form sends through the site’s configured mail server. If no mail server is configured, submission will explain that it is unavailable.</p><button type="submit">Send message ↗</button><p id="contactResult" role="status"></p></form></article>'
+   html:'<article class="info-card"><form id="contactForm" class="simple-form"><label>Name<input id="contactName" maxlength="80" required></label><label>Email<input id="contactEmail" type="email" maxlength="254" required></label><label>Message<textarea id="contactMessage" minlength="8" maxlength="3000" placeholder="For a conversion error, include the video link and what went wrong." required></textarea></label><p class="muted">Your message is saved to our private support inbox. Email notifications may not be enabled.</p><button type="submit">Send message ↗</button><p id="contactResult" role="status"></p></form></article>'
  },
  "/privacy":{
    eyebrow:"YOUR DATA",title:"Privacy information",subtitle:"A straightforward explanation of how this open-source starter handles information.",
-   html:'<article class="info-card"><h3>What the site processes</h3><p>To complete a request, the server processes a YouTube URL, video metadata and a temporary converted file. It also keeps a short-lived conversion job ID and rate-limit counters based on the network address visible to the server.</p><h3>Storage and deletion</h3><p>Conversion files are temporary and removed after the download window (normally one hour). Contact messages, when enabled, are sent by email. Hosting providers may retain access and security logs outside the application.</p><h3>Ads and trackers</h3><p>The provided application code includes no third-party analytics or advertising scripts. Web fonts are requested from Google Fonts; those font requests may be logged by the provider.</p><h3>Important</h3><p>Before public launch, the operator must provide its actual identity, contact information, hosting/processor details, and any legally required privacy disclosures.</p></article>'
+   html:'<article class="info-card"><h3>What the site processes</h3><p>To complete a request, the server processes a YouTube URL, video metadata and a temporary converted file. It also keeps a short-lived conversion job ID and rate-limit counters based on the network address visible to the server.</p><h3>Storage and deletion</h3><p>Converted files normally expire about one hour after completion. Job progress and downloads are temporarily stored on the service’s persistent disk and may survive restarts. Your recent conversion IDs are saved in this browser until cleared. Contact requests are saved in a private operator inbox, with optional email forwarding. Hosting providers may retain security logs outside the application.</p><h3>Ads and trackers</h3><p>The provided application code includes no third-party analytics or advertising scripts. Web fonts are requested from Google Fonts; those font requests may be logged by the provider.</p><h3>Important</h3><p>Before public launch, the operator must provide its actual identity, contact information, hosting/processor details, and any legally required privacy disclosures.</p></article>'
  },
  "/copyright":{
    eyebrow:"RIGHTS & OWNERSHIP",title:"Copyright and content rights",subtitle:"Respecting creators, publishers and other rights holders.",
@@ -106,9 +106,99 @@ async function jsonOrError(res){
   }
   return json;
 }
+
+const HISTORY_KEY="clipconvert-recent-v1";
+let activeJobId=null,activeBatchId=null;
+function historyEntries(){
+  try{
+    const parsed=JSON.parse(localStorage.getItem(HISTORY_KEY)||"[]");
+    return Array.isArray(parsed)?parsed.slice(0,35):[];
+  }catch{return [];}
+}
+function rememberConversion(type,id){
+  if(!id)return;
+  const old=historyEntries().filter(x=>!(x.type===type&&x.id===id));
+  old.unshift({type,id,time:Date.now()});
+  try{localStorage.setItem(HISTORY_KEY,JSON.stringify(old.slice(0,35)));}catch{}
+  refreshHistory();
+}
+async function openSavedConversion(type,id){
+  if(pollTimer)clearTimeout(pollTimer);
+  if(batchTimer)clearTimeout(batchTimer);
+  $("convertForm").hidden=true;
+  if(type==="batch"){
+    $("jobPanel").hidden=true;$("batchPanel").hidden=false;
+    activeBatchId=id;pollBatch(id);
+  }else{
+    $("batchPanel").hidden=true;$("jobPanel").hidden=false;
+    activeJobId=id;poll(id);
+  }
+  $("converter").scrollIntoView({behavior:"smooth",block:"center"});
+}
+async function refreshHistory(){
+  const entries=historyEntries();
+  $("historySection").hidden=!entries.length;
+  if(!entries.length)return;
+  const results=await Promise.all(entries.map(async entry=>{
+    const path=entry.type==="batch"?"/api/batches/":"/api/jobs/";
+    try{
+      const r=await fetch(path+encodeURIComponent(entry.id),{cache:"no-store"});
+      if(r.status===404)return {...entry,expired:true};
+      if(!r.ok)return {...entry,problem:true};
+      return {...entry,data:await r.json()};
+    }catch{return {...entry,problem:true};}
+  }));
+  const cards=results.map(entry=>{
+    const card=document.createElement("article");card.className="history-card";
+    const info=document.createElement("div");info.className="history-info";
+    const title=document.createElement("strong");
+    const sub=document.createElement("span");
+    const d=entry.data;
+    title.textContent=d?.title||(entry.type==="batch"?"Batch conversion":"Video conversion");
+    sub.textContent=entry.expired?"Download expired":entry.problem?"Temporarily unavailable":
+      ((entry.type==="batch"?(d.succeeded+" of "+d.total+" ready"):d.state)+
+        " · "+(d.actual_quality||d.format?.toUpperCase()||"")) ;
+    info.append(title,sub);card.append(info);
+    if(d&&!entry.expired){
+      const button=document.createElement("button");button.type="button";
+      button.textContent=d.state==="ready"||d.state==="complete"||d.state==="partial"?
+         "Open downloads":"View progress";
+      button.addEventListener("click",()=>openSavedConversion(entry.type,entry.id));
+      card.append(button);
+    }
+    return card;
+  });
+  $("historyList").replaceChildren(...cards);
+}
+async function retrySingle(){
+  if(!activeJobId)return;
+  $("retryVideoButton").disabled=true;
+  try{
+    const data=await jsonOrError(await fetch("/api/jobs/"+encodeURIComponent(activeJobId)+"/retry",
+      {method:"POST"}));
+    $("retryVideoButton").hidden=true;showError("jobError","");
+    updateProgress(data);poll(activeJobId);
+  }catch(err){showError("jobError",err.message)}
+  finally{$("retryVideoButton").disabled=false;}
+}
+async function retryBatch(){
+  if(!activeBatchId)return;
+  $("batchRetry").disabled=true;
+  try{
+    const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(activeBatchId)+"/retry",
+      {method:"POST"}));
+    $("batchRetry").hidden=true;showError("batchError","");
+    updateBatchPanel(data);pollBatch(activeBatchId);
+  }catch(err){showError("batchError",err.message);}
+  finally{$("batchRetry").disabled=false;}
+}
+
 function updateProgress(data){
   $("jobTitle").textContent=data.title||"Preparing your video…";
-  $("jobStatus").textContent=data.message||"Working on it…";
+  $("jobStatus").textContent=data.state==="queued" && data.queue_position
+    ? "Waiting in queue · position "+data.queue_position
+    : (data.message||"Working on it…");
+  $("retryVideoButton").hidden=!data.retry_url;
   const displayedQuality=data.actual_quality ||
     (Number(data.quality)===0?"Best available (Auto)":
       String(data.quality)+(data.format==="mp3"?" kbps":"p"));
@@ -198,6 +288,7 @@ function updateBatchPanel(data){
   $("batchDownload").hidden=!data.download_url;
   $("batchDownload").textContent="↓ Download "+data.succeeded+" videos in one ZIP";
   $("batchReset").hidden=!terminal;
+  $("batchRetry").hidden=!(terminal && Number(data.failed)>0);
   if(terminal && data.state==="failed")
     showError("batchError","None of the videos could be converted. See individual errors above.");
   else showError("batchError","");
@@ -267,6 +358,8 @@ async function submitConversion(e){
         body:JSON.stringify({links:enteredBatchLinks(),format,
           quality:Number($("quality").value),rights_confirmed:true})});
       const data=await jsonOrError(response);
+      activeBatchId=data.id;
+      rememberConversion("batch",data.id);
       $("convertForm").hidden=true;
       $("jobPanel").hidden=true;
       $("batchPanel").hidden=false;
@@ -287,6 +380,8 @@ async function submitConversion(e){
           quality:Number($("quality").value),rights_confirmed:true})});
     }
     const data=await jsonOrError(response);
+    activeJobId=data.id;
+    rememberConversion("job",data.id);
     $("convertForm").hidden=true;
     $("jobPanel").hidden=false;
     $("downloadButton").hidden=true;
@@ -341,9 +436,10 @@ function activatePage(path){
   if(path==="/contact")$("contactForm").addEventListener("submit",async e=>{
     e.preventDefault();const status=$("contactResult");status.textContent="Sending…";
     try{
-      await jsonOrError(await fetch("/api/contact",{method:"POST",headers:{"Content-Type":"application/json"},
+      const answer=await jsonOrError(await fetch("/api/contact",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({name:clean($("contactName").value),email:clean($("contactEmail").value),message:clean($("contactMessage").value)})}));
-      status.textContent="Message sent successfully!";$("contactForm").reset();
+      status.textContent="Message saved successfully. Reference "+(answer.reference||"")+".";
+      $("contactForm").reset();
     }catch(err){status.textContent=err.message;}
   });
 }
@@ -355,6 +451,13 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("batchSourceButton").addEventListener("click",()=>setSource("batch"));
   $("batchUrls").addEventListener("input",updateBatchCount);
   $("batchReset").addEventListener("click",resetBatch);
+  $("batchRetry").addEventListener("click",retryBatch);
+  $("retryVideoButton").addEventListener("click",retrySingle);
+  $("historyClear").addEventListener("click",()=>{
+    try{localStorage.removeItem(HISTORY_KEY)}catch{}
+    $("historySection").hidden=true;$("historyList").replaceChildren();
+  });
+  refreshHistory();
   $("batchPasteButton").addEventListener("click",async()=>{
     try{
       const text=await navigator.clipboard.readText();
