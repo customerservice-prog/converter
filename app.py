@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac
+import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac, html
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from email.message import EmailMessage
@@ -9,7 +9,7 @@ from urllib.request import Request as HttpRequest, urlopen
 from typing import Literal
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from durable import StateStore, database_path
@@ -933,8 +933,69 @@ def admin_page():
 
 
 
+SITE_URL=os.getenv("SITE_URL","https://clipconvert-web-production.up.railway.app").rstrip("/")
+PUBLIC_PATHS=("", "faq", "add-on", "bookmarklet", "thumbnail", "contact",
+              "privacy", "copyright", "terms")
+SEO_PAGES={
+    "":("ClipConvert — YouTube to MP3 & MP4",
+        "Convert authorized YouTube videos into MP3 audio or MP4 video. Best available quality, multi-link batches and organized downloads."),
+    "faq":("Frequently asked questions — ClipConvert",
+           "Answers about ClipConvert audio and video conversion, formats, limits and downloads."),
+    "add-on":("Browser extension — ClipConvert",
+              "Use the ClipConvert browser extension for authorized YouTube conversions."),
+    "bookmarklet":("Bookmarklets — ClipConvert",
+                   "Convert a permitted YouTube video using convenient browser bookmarklets."),
+    "thumbnail":("Thumbnail downloader — ClipConvert",
+                 "Retrieve a thumbnail image from a public YouTube video."),
+    "contact":("Contact support — ClipConvert",
+               "Contact ClipConvert about conversions, rights concerns and error reports."),
+    "privacy":("Privacy policy — ClipConvert",
+               "Read how ClipConvert handles temporary files, job data and support submissions."),
+    "copyright":("Copyright policy — ClipConvert",
+                 "Learn about ClipConvert copyright compliance and reporting concerns."),
+    "terms":("Terms of service — ClipConvert",
+             "Review ClipConvert's acceptable-use terms and service limitations."),
+}
+
+
+@app.get("/robots.txt",include_in_schema=False)
+def robots_txt():
+    return Response(
+        "User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /admin\n"
+        "Sitemap: "+SITE_URL+"/sitemap.xml\n",
+        media_type="text/plain",headers={"Cache-Control":"public, max-age=3600"})
+
+
+@app.get("/sitemap.xml",include_in_schema=False)
+def sitemap_xml():
+    links=[SITE_URL+("/"+p if p else "/") for p in SEO_PAGES]
+    xml='<?xml version="1.0" encoding="UTF-8"?>\n'
+    xml+='<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    for link in links:
+        xml+="<url><loc>"+html.escape(link,quote=True)+"</loc></url>\n"
+    xml+="</urlset>\n"
+    return Response(xml,media_type="application/xml",
+                    headers={"Cache-Control":"public, max-age=3600"})
+
+
 @app.get("/{path:path}",include_in_schema=False)
 def page(path:str):
-    if path not in ("","faq","add-on","bookmarklet","thumbnail","contact","privacy","copyright","terms"):
+    if path not in PUBLIC_PATHS:
         raise HTTPException(404,"Page not found.")
-    return FileResponse(ROOT/"static"/"index.html")
+    title,description=SEO_PAGES[path]
+    canonical=SITE_URL+("/"+path if path else "/")
+    doc=(ROOT/"static"/"index.html").read_text(encoding="utf-8")
+    # Server-rendered metadata for search engines that do not execute JS.
+    doc=doc.replace('ClipConvert — YouTube to MP3 & MP4</title>',
+                    html.escape(title)+"</title>",1)
+    doc=doc.replace('content="Convert permitted YouTube videos to MP3 or MP4. Fast, simple, no account needed."',
+                    'content="'+html.escape(description,quote=True)+'"',1)
+    doc=doc.replace('content="ClipConvert — Simple MP3 & MP4 conversion"',
+                    'content="'+html.escape(title,quote=True)+'"',1)
+    doc=doc.replace('content="Paste a YouTube link, choose a format, and download."',
+                    'content="'+html.escape(description,quote=True)+'"',1)
+    doc=doc.replace('href="https://clipconvert-web-production.up.railway.app/"',
+                    'href="'+html.escape(canonical,quote=True)+'"',1)
+    doc=doc.replace('property="og:url" content="https://clipconvert-web-production.up.railway.app/"',
+                    'property="og:url" content="'+html.escape(canonical,quote=True)+'"',1)
+    return HTMLResponse(doc,headers={"Cache-Control":"public, max-age=180"})
