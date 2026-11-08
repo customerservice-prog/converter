@@ -211,7 +211,7 @@ async def headers(request:Request,call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail","best_quality_auto"]}
+    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail","best_quality_auto","organized_folders","parallel_fragments"]}
 
 @app.post("/api/jobs",status_code=202)
 def create(payload:ConvertRequest,request:Request):
