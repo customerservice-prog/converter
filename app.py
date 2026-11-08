@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile
+import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from email.message import EmailMessage
@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from durable import StateStore, database_path
 
 ROOT=Path(__file__).resolve().parent
 MEDIA=Path(os.getenv("MEDIA_DIR","/tmp/converter-media")); MEDIA.mkdir(parents=True,exist_ok=True)
@@ -25,7 +26,15 @@ ID=re.compile(r"^[A-Za-z0-9_-]{11}$")
 HOSTS={"youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"}
 DURATION_LIMIT={"mp3":14400,"mp4":1800}
 QUALITIES={"mp3":(0,128,192,320),"mp4":(0,360,720,1080,1440,2160)}
-jobs={}; batches={}; quota=defaultdict(list); contact_quota=defaultdict(list); mutex=threading.RLock()
+STORE=StateStore(database_path(MEDIA))
+jobs=STORE.load("job")
+batches=STORE.load("batch")
+quota=defaultdict(list,STORE.load("quota"))
+contact_quota=defaultdict(list,STORE.load("contact_quota"))
+mutex=threading.RLock()
+_last_saved={}
+MAX_QUEUE_JOBS=max(3,int(os.getenv("MAX_QUEUE_JOBS","32")))
+MIN_FREE_MB=max(100,int(os.getenv("MIN_FREE_MB","200")))
 MAX_BATCH_LINKS=min(10,max(2,int(os.getenv("MAX_BATCH_LINKS","10"))))
 conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
 log=logging.getLogger("converter")
@@ -55,29 +64,104 @@ def video_id(raw:str)->str:
 def public(job):
     fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","audio_codec","audio_channels","error")
     data={key:job.get(key) for key in fields}
+    if job["state"] in ("queued","working"):
+        waiting=[k for k,v in jobs.items() if v.get("state") in ("queued","working")]
+        waiting.sort(key=lambda k: jobs[k].get("created",0))
+        data["queue_position"]=waiting.index(job["id"])+1 if job["id"] in waiting else None
     if job["state"]=="ready":
         data["download_url"]="/api/download/"+job["id"]
         data["folder_url"]="/api/download/"+job["id"]+"/folder"
     return data
 
+def save_job(jid,force=False):
+    job=jobs.get(jid)
+    if not job:return
+    now=time.time()
+    last=_last_saved.get(jid,0)
+    if force or now-last>2:
+        STORE.put("job",jid,job)
+        _last_saved[jid]=now
+
+
 def change(jid,**kwargs):
     with mutex:
-        if jid in jobs: jobs[jid].update(kwargs)
+        if jid in jobs:
+            previous=jobs[jid].get("state")
+            jobs[jid].update(kwargs)
+            save_job(jid,force=("state" in kwargs and kwargs["state"]!=previous)
+                     or kwargs.get("state") in ("ready","error"))
 
 def cleanup():
     now=time.time()
     with mutex:
         expired=[k for k,j in jobs.items() if j["state"] in ("ready","error") and now-j.get("ended",now)>TTL]
-        for k in expired: jobs.pop(k,None)
+        for k in expired:
+            jobs.pop(k,None)
+            _last_saved.pop(k,None)
+            STORE.drop("job",k)
         expired_batches=[bid for bid,b in batches.items()
             if b["state"] in ("complete","partial","failed") and now-b.get("ended",now)>TTL]
-        for bid in expired_batches: batches.pop(bid,None)
+        for bid in expired_batches:
+            batches.pop(bid,None)
+            STORE.drop("batch",bid)
         for bucket in (quota,contact_quota):
             for ip in list(bucket):
                 bucket[ip]=[t for t in bucket[ip] if now-t<86400]
                 if not bucket[ip]: bucket.pop(ip,None)
+                STORE.put("quota" if bucket is quota else "contact_quota",ip,bucket.get(ip,[]))
     for k in expired: shutil.rmtree(MEDIA/k,ignore_errors=True)
     for bid in expired_batches: shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
+
+
+def ensure_disk_space():
+    try:
+        if shutil.disk_usage(MEDIA).free < MIN_FREE_MB*1024*1024:
+            raise HTTPException(503,"Temporary storage is full. Please try again later.")
+    except OSError as exc:
+        raise HTTPException(503,"Media storage is unavailable.") from exc
+
+
+def restore_jobs():
+    """Resume incomplete jobs after a deploy/restart; preserve completed files."""
+    with mutex:
+        resume_batches=[]
+        standalone=[]
+        for jid,j in list(jobs.items()):
+            if j.get("state")=="ready" and not Path(j.get("file","/nonexistent")).is_file():
+                j.update(state="error",error="File was not retained after restart.",
+                         message="Download expired",ended=time.time())
+                save_job(jid,True)
+            elif j.get("state") in ("working","queued","receiving"):
+                if j.get("state")=="receiving":
+                    j.update(state="error",error="Upload was interrupted. Please upload again.",
+                             message="Upload interrupted",ended=time.time())
+                    save_job(jid,True)
+                elif not j.get("batch_id"):
+                    standalone.append((jid,j))
+        for bid,b in batches.items():
+            if b.get("state")=="working":
+                resume_batches.append(bid)
+    for jid,j in standalone:
+        vid=j.get("video_id")
+        if vid:
+            threading.Thread(target=run_queued_conversion,
+                args=(jid,vid,j["format"],j["quality"]),daemon=True).start()
+        elif j.get("upload_extension") and (MEDIA/jid/("source"+j["upload_extension"])).exists():
+            threading.Thread(target=run_queued_upload,
+                args=(jid,j["upload_extension"],j.get("title") or "Upload",
+                      j["format"],j["quality"]),daemon=True).start()
+        else:
+            change(jid,state="error",error="Source is no longer available. Please retry.",
+                   message="Conversion interrupted",ended=time.time())
+    for bid in resume_batches:
+        threading.Thread(target=convert_batch,args=(bid,),daemon=True).start()
+
+
+@app.on_event("startup")
+def resume_persistent_jobs():
+    cleanup()
+    restore_jobs()
+
 
 def janitor():
     while True:
@@ -284,12 +368,21 @@ async def headers(request:Request,call_next):
     result.headers["X-Frame-Options"]="DENY"
     result.headers["Referrer-Policy"]="strict-origin-when-cross-origin"
     result.headers["Permissions-Policy"]="camera=(),microphone=(),geolocation=()"
+    result.headers["Content-Security-Policy"]="frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    if request.url.scheme=="https":
+        result.headers["Strict-Transport-Security"]="max-age=31536000"
+    if request.url.path.startswith(("/api/","/admin")):
+        result.headers["X-Robots-Tag"]="noindex, nofollow"
     if request.url.path.startswith("/api/"): result.headers["Cache-Control"]="no-store"
     return result
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail","best_quality_auto","organized_folders","parallel_fragments","batch_links","aac_mp4_audio"]}
+    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),
+            "storage_ready":STORE.path.is_file(),"yt_dlp":yt_dlp.version.__version__,
+            "features":["upload","youtube","thumbnail","best_quality_auto",
+                        "organized_folders","parallel_fragments","batch_links",
+                        "aac_mp4_audio","durable_jobs","contact_inbox","retry"]}
 
 
 def run_queued_conversion(jid:str,vid:str,fmt:str,quality:int)->None:
@@ -324,10 +417,12 @@ def convert_batch(batch_id:str)->None:
         batch=batches.get(batch_id)
         if not batch:return
         batch["state"]="working"
+        STORE.put("batch",batch_id,batch)
         ids=list(batch["job_ids"])
         fmt=batch["format"]
         quality=batch["quality"]
-        pairs=[(jid,jobs[jid]["video_id"]) for jid in ids]
+        pairs=[(jid,jobs[jid]["video_id"]) for jid in ids
+               if jid in jobs and jobs[jid]["state"]!="ready" and jobs[jid]["state"]!="error"]
     try:
         with ThreadPoolExecutor(max_workers=min(2,MAX_ACTIVE),thread_name_prefix="clip-batch") as executor:
             futures=[executor.submit(run_queued_conversion,jid,vid,fmt,quality)
@@ -348,10 +443,12 @@ def convert_batch(batch_id:str)->None:
                         item.update(state="error",error="This conversion stopped unexpectedly.",
                                     progress=0,message="Conversion failed")
                     item["ended"]=now
+                    save_job(jid,True)
             success=sum(jobs[jid]["state"]=="ready" for jid in ids if jid in jobs)
             batch["state"]="complete" if success==len(ids) else "partial" if success else "failed"
             batch["ended"]=now
             batch["message"]=f"{success} of {len(ids)} videos converted"
+            STORE.put("batch",batch_id,batch)
 
 
 @app.post("/api/batches",status_code=202)
@@ -369,15 +466,15 @@ def create_batch(payload:BatchRequest,request:Request):
     if len(ids)<2:
         raise HTTPException(400,"Add at least two different YouTube videos.")
     cleanup()
+    ensure_disk_space()
     ip=request.client.host if request.client else "unknown"
     now=time.time()
     with mutex:
         if len(quota[ip])+len(ids)>DAILY_LIMIT:
             raise HTTPException(429,"The batch exceeds the remaining daily conversion limit.")
-        if any(b["state"]=="working" for b in batches.values()):
-            raise HTTPException(503,"Another batch is already processing. Try again after it finishes.")
-        if sum(j["state"] in ("working","receiving") for j in jobs.values())>=MAX_ACTIVE:
-            raise HTTPException(503,"The converter is busy. Try again shortly.")
+        waiting=sum(j["state"] in ("queued","working","receiving") for j in jobs.values())
+        if waiting+len(ids)>MAX_QUEUE_JOBS:
+            raise HTTPException(503,"The queue is full. Please try again shortly.")
         bid=uuid.uuid4().hex
         jids=[]
         for vid in ids:
@@ -389,9 +486,12 @@ def create_batch(payload:BatchRequest,request:Request):
                        "duration":None,"format":payload.format,"quality":payload.quality,
                        "actual_quality":None,"error":None,"created":now,"batch_id":bid}
         quota[ip].extend([now]*len(ids))
+        STORE.put("quota",ip,quota[ip])
+        for jid in jids:save_job(jid,True)
         batches[bid]={"id":bid,"state":"working","created":now,
                       "message":"Preparing batch…","job_ids":jids,
                       "format":payload.format,"quality":payload.quality}
+        STORE.put("batch",bid,batches[bid])
     threading.Thread(target=convert_batch,args=(bid,),daemon=True,
                      name="batch-"+bid[:8]).start()
     return public_batch(batches[bid])
@@ -456,9 +556,10 @@ def create(payload:ConvertRequest,request:Request):
     except ValueError as exc: raise HTTPException(400,str(exc)) from exc
     if payload.quality not in QUALITIES[payload.format]: raise HTTPException(400,"Unsupported format quality.")
     cleanup()
+    ensure_disk_space()
     now=time.time(); ip=request.client.host if request.client else "unknown"
     with mutex:
-        if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_ACTIVE:
+        if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_QUEUE_JOBS:
             raise HTTPException(503,"The converter is busy. Please try again.")
         if len(quota[ip])>=DAILY_LIMIT: raise HTTPException(429,"Daily download limit reached.")
         quota[ip].append(now); jid=uuid.uuid4().hex
@@ -466,6 +567,8 @@ def create(payload:ConvertRequest,request:Request):
              "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","video_id":vid,"duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
              "error":None,"created":now}
         jobs[jid]=job
+        STORE.put("quota",ip,quota[ip])
+        save_job(jid,True)
     threading.Thread(target=run_queued_conversion,args=(jid,vid,payload.format,payload.quality),daemon=True).start()
     return public(job)
 
@@ -580,10 +683,11 @@ async def upload_media(
     if length.isdecimal() and int(length)>MAX_UPLOAD_BYTES+1048576:
         raise HTTPException(413,"The file is too large. Upload up to "+str(MAX_UPLOAD_BYTES//1048576)+" MB.")
     cleanup()
+    ensure_disk_space()
     ip=request.client.host if request.client else "unknown"
     now=time.time()
     with mutex:
-        if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_ACTIVE:
+        if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_QUEUE_JOBS:
             raise HTTPException(503,"All converters are busy. Please try again.")
         if len(quota[ip])>=DAILY_LIMIT:
             raise HTTPException(429,"Daily conversion limit reached.")
@@ -592,7 +696,9 @@ async def upload_media(
         jobs[jid]={"id":jid,"state":"receiving","progress":1,
                    "message":"Receiving file…","title":Path(name).stem[:100] or "Uploaded media",
                    "thumbnail":None,"duration":None,"format":format,"quality":quality,"actual_quality":None,
-                   "error":None,"created":now}
+                   "error":None,"created":now,"upload_extension":extension}
+        STORE.put("quota",ip,quota[ip])
+        save_job(jid,True)
     folder=MEDIA/jid
     folder.mkdir(mode=0o700,parents=True,exist_ok=True)
     source=folder/("source"+extension)
@@ -610,6 +716,7 @@ async def upload_media(
     except Exception:
         with mutex:
             jobs.pop(jid,None)
+            STORE.drop("job",jid)
         shutil.rmtree(folder,ignore_errors=True)
         raise
     finally:
