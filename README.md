@@ -7,7 +7,7 @@ A complete original-design website modeled on the *workflow* of YTMP3: paste a Y
 ## Features implemented
 
 - YouTube video, Shorts, share-link, embed and finished-livestream URL support.
-- MP3 audio at 128 / **192** / 320 kbps; MP4 video at **360p** / 720p / 1080p when compatible streams are available.
+- **Best available (Auto) is the default** for both types: highest available video resolution and best source audio encoded to 320 kbps MP3. Users can still set manual limits (MP3: 128/192/320 kbps, MP4: 360/720/1080/1440/2160p).
 - Up to 240 minutes for MP3, 30 minutes for MP4.
 - yt-dlp + yt-dlp-ejs + Node 22 challenge runtime + FFmpeg for actual conversion (no fake download button).
 - Server-side background jobs, live progress polling, video title/thumbnail, download links, error handling, 1-hour file lifetime and janitor cleanup every five minutes.
@@ -102,3 +102,7 @@ The initial version failed for YouTube video `NY6acnscmwo` because YouTube issue
 **Important limitation:** YouTube can still change its access rules, restrict individual videos, or restrict the current IPv6 address. This test is proof that the specified formats worked at the time of testing, **not a guarantee that every YouTube URL will work indefinitely**. No personal Google credentials or cookie scraping is used. Only convert content you have permission to download. A permitted media-file upload option remains available.
 
 **Other settings:** `MAX_UPLOAD_MB` defaults to 100 MB. Uploads are checked with ffprobe and converted with FFmpeg, and temporary files are cleaned after their retention period.
+
+## Best-quality default
+
+The quality selector defaults to `0` (**Best available / Auto**) in the UI, YouTube API and file upload API. For MP4 links, yt-dlp selects the best video and audio streams without a resolution cap and merges to MP4. This may include 4K or higher if available. For MP3, the best available source audio is encoded to 320 kbps; that output bitrate **cannot restore information missing from a lower-quality source**. For user-uploaded video, Auto preserves the original dimensions and remuxes compatible H.264/HEVC + AAC streams without recompression, or uses a high-quality encode where necessary. The completed-job status reports actual resolution or MP3 bitrate. High-quality media takes more time, bandwidth, and temporary storage; limits still apply.

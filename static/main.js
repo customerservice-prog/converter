@@ -8,7 +8,7 @@ const routes={
     ["What is ClipConvert?","A web tool that converts permitted public YouTube videos into downloadable MP3 audio or MP4 video using server-side FFmpeg and yt-dlp."],
     ["Is the converter free?","Yes. There is no account, subscription or payment required. To protect the server from overload, a daily usage limit applies."],
     ["What YouTube links work?","Normal watch URLs, youtu.be share links, Shorts, embed URLs, and finished livestream URLs. Private, age-gated or otherwise restricted content may fail."],
-    ["Which formats are available?","MP3 at 128, 192 or 320 kbps; MP4 at 360p, 720p or 1080p when the source provides compatible streams."],
+    ["Which formats are available?","Best available (Auto) is selected by default. For MP3, Auto encodes the best source audio at up to 320 kbps; this cannot improve a lower-quality source. For MP4, Auto chooses the highest available video resolution without a fixed cap. You can also choose manual quality limits."],
     ["How long can my video be?","Up to 240 minutes for MP3 conversion and up to 30 minutes for MP4 conversion."],
     ["Why does a conversion sometimes fail?","YouTube may restrict access, the original may be unavailable, the source may exceed size limits, or the server may be temporarily busy. Videos that require sign-in or bypassing restrictions are not supported."],
     ["Where is the file saved?","In your browser's normal downloads folder. On phones, check Files or Downloads."],
@@ -80,9 +80,11 @@ function setFormat(which){
     const active=b.dataset.format===which;
     b.classList.toggle("selected",active);b.setAttribute("aria-pressed",String(active));
   });
-  const choices=which==="mp3"?[[128,"128 kbps"],[192,"192 kbps"],[320,"320 kbps"]]:[[360,"360p"],[720,"720p HD"],[1080,"1080p Full HD"]];
+  const choices=which==="mp3"
+    ? [[0,"★ Best available (Auto)"],[320,"320 kbps"],[192,"192 kbps"],[128,"128 kbps"]]
+    : [[0,"★ Best available (Auto)"],[2160,"2160p / 4K"],[1440,"1440p / 2K"],[1080,"1080p Full HD"],[720,"720p HD"],[360,"360p"]];
   $("quality").innerHTML=choices.map(q=>'<option value="'+q[0]+'">'+q[1]+"</option>").join("");
-  $("quality").value=which==="mp3"?"192":"360";
+  $("quality").value="0";
 }
 async function jsonOrError(res){
   let json={};try{json=await res.json();}catch{}
@@ -95,7 +97,11 @@ async function jsonOrError(res){
 function updateProgress(data){
   $("jobTitle").textContent=data.title||"Preparing your video…";
   $("jobStatus").textContent=data.message||"Working on it…";
-  $("jobDetail").textContent=(data.format||format).toUpperCase()+" · "+(data.quality||$("quality").value)+(data.format==="mp3"?" kbps":"p")+(data.duration?" · "+Math.ceil(data.duration/60)+" min":"");
+  const displayedQuality=data.actual_quality ||
+    (Number(data.quality)===0?"Best available (Auto)":
+      String(data.quality)+(data.format==="mp3"?" kbps":"p"));
+  $("jobDetail").textContent=(data.format||format).toUpperCase()+" · "+displayedQuality+
+    (data.duration?" · "+Math.ceil(data.duration/60)+" min":"");
   if(data.thumbnail){$("jobThumbnail").src=data.thumbnail;$("jobThumbnail").hidden=false;}
   else $("jobThumbnail").hidden=true;
   const pct=Number(data.progress||0);

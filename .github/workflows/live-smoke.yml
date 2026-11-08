@@ -76,7 +76,7 @@ jobs:
           print("SUCCESS: upload to MP3 download works on Railway",flush=True)
           # Release gate: verify the exact requested YouTube link completes as
           # both video and audio, and that both formats can actually be downloaded.
-          for fmt, quality, mime in (("mp4",360,"video/mp4"),("mp3",192,"audio/mpeg")):
+          for fmt, quality, mime in (("mp4",0,"video/mp4"),("mp3",0,"audio/mpeg")):
               payload=json.dumps({"url":"https://youtu.be/NY6acnscmwo",
                                   "format":fmt,"quality":quality,
                                   "rights_confirmed":True}).encode()
@@ -91,6 +91,9 @@ jobs:
                   if state["state"] in ("ready","error"): break
                   time.sleep(2)
               assert state["state"]=="ready",("YouTube extraction or conversion failed",fmt,state)
+              assert state["quality"]==0,("Expected automatic quality",fmt,state)
+              assert state.get("actual_quality"),("No actual output quality reported",fmt,state)
+              print("BEST QUALITY SELECTED:",fmt,state["actual_quality"],flush=True)
               code,body,headers=request(state["download_url"])
               assert code==200 and len(body)>10000,("Download unavailable",fmt,code,len(body))
               assert mime in headers["Content-Type"],("Wrong media type",fmt,headers["Content-Type"])

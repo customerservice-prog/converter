@@ -23,7 +23,7 @@ UPLOAD_EXTENSIONS={".mp4",".mov",".m4v",".webm",".mkv",".mp3",".m4a",".wav",".fl
 ID=re.compile(r"^[A-Za-z0-9_-]{11}$")
 HOSTS={"youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"}
 DURATION_LIMIT={"mp3":14400,"mp4":1800}
-QUALITIES={"mp3":(128,192,320),"mp4":(360,720,1080)}
+QUALITIES={"mp3":(0,128,192,320),"mp4":(0,360,720,1080,1440,2160)}
 jobs={}; quota=defaultdict(list); contact_quota=defaultdict(list); mutex=threading.RLock()
 log=logging.getLogger("converter")
 app=FastAPI(title="Converter API",docs_url=None,redoc_url=None)
@@ -50,7 +50,7 @@ def video_id(raw:str)->str:
     except Exception as exc: raise ValueError("Enter a valid YouTube URL.") from exc
 
 def public(job):
-    fields=("id","state","progress","message","title","thumbnail","duration","format","quality","error")
+    fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","error")
     data={key:job.get(key) for key in fields}
     if job["state"]=="ready": data["download_url"]="/api/download/"+job["id"]
     return data
@@ -80,13 +80,52 @@ threading.Thread(target=janitor,daemon=True,name="media-cleanup").start()
 class ConvertRequest(BaseModel):
     url:str=Field(min_length=1,max_length=2048)
     format:Literal["mp3","mp4"]="mp3"
-    quality:int=192
+    quality:int=0
     rights_confirmed:bool=False
 
 class ContactRequest(BaseModel):
     name:str=Field(min_length=1,max_length=80)
     email:str=Field(min_length=3,max_length=254)
     message:str=Field(min_length=8,max_length=3000)
+
+def quality_label(path:Path,fmt:str)->str|None:
+    """Report the actual produced file's video height or MP3 bitrate."""
+    try:
+        probe=subprocess.run(
+            ["ffprobe","-v","error","-show_entries","stream=codec_type,height,bit_rate",
+             "-of","json",str(path)],capture_output=True,text=True,timeout=20)
+        if probe.returncode: return None
+        streams=json.loads(probe.stdout).get("streams",[])
+        if fmt=="mp4":
+            stream=next((s for s in streams if s.get("codec_type")=="video"),None)
+            return str(stream["height"])+"p" if stream and stream.get("height") else None
+        stream=next((s for s in streams if s.get("codec_type")=="audio"),None)
+        bitrate=int((stream or {}).get("bit_rate") or 0)//1000
+        return str(bitrate)+" kbps" if bitrate else None
+    except (OSError,ValueError,TypeError,subprocess.TimeoutExpired):
+        return None
+
+
+def youtube_output_options(fmt:str,quality:int)->dict:
+    """Pick best available streams for Auto (0), or enforce a user-selected cap."""
+    if fmt=="mp3":
+        bitrate=320 if quality==0 else quality
+        return {"format":"bestaudio/best",
+                "postprocessors":[{"key":"FFmpegExtractAudio",
+                                   "preferredcodec":"mp3",
+                                   "preferredquality":str(bitrate)}]}
+    if quality==0:
+        # Match yt-dlp's default best-video-plus-best-audio selection.
+        # No height cap: may select 1440p, 2160p, or higher source video.
+        return {"format":"bestvideo*+bestaudio/best",
+                "format_sort":["res","fps","hdr:12","vcodec","acodec"],
+                "merge_output_format":"mp4"}
+    cap=str(quality)
+    return {"format":("bestvideo[ext=mp4][height<="+cap+"]+bestaudio[ext=m4a]/"
+                      "bestvideo[height<="+cap+"]+bestaudio/"
+                      "best[height<="+cap+"]"),
+            "merge_output_format":"mp4"}
+
 
 def convert(jid,vid,fmt,quality):
     directory=MEDIA/jid; directory.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -139,19 +178,12 @@ def convert(jid,vid,fmt,quality):
                 change(jid,progress=percent,message="Downloading media…")
             elif x.get("status")=="finished":
                 change(jid,progress=90,message="Finalizing your file…")
-        options={**opts,"progress_hooks":[progress]}
-        if fmt=="mp3":
-            options["format"]="bestaudio/best"
-            options["postprocessors"]=[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":str(quality)}]
-        else:
-            options["format"]=("bestvideo[ext=mp4][height<="+str(quality)+"]+bestaudio[ext=m4a]/"
-                               "best[ext=mp4][height<="+str(quality)+"]")
-            options["merge_output_format"]="mp4"
+        options={**opts,"progress_hooks":[progress],**youtube_output_options(fmt,quality)}
         with yt_dlp.YoutubeDL(options) as ydl: ydl.download([url])
         files=sorted(directory.glob("*."+fmt))
         if not files: raise ValueError("No compatible output is available for this video.")
         if files[0].stat().st_size>FILE_LIMIT: raise ValueError("Converted file is too large.")
-        change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),ended=time.time())
+        change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),actual_quality=quality_label(files[0],fmt),ended=time.time())
     except Exception as exc:
         log.warning("Job %s failed: %s",jid,type(exc).__name__)
         text=str(exc).lower()
@@ -192,7 +224,7 @@ def create(payload:ConvertRequest,request:Request):
         if len(quota[ip])>=DAILY_LIMIT: raise HTTPException(429,"Daily download limit reached.")
         quota[ip].append(now); jid=uuid.uuid4().hex
         job={"id":jid,"state":"queued","progress":0,"message":"Starting…","title":"YouTube video",
-             "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","duration":None,"format":payload.format,"quality":payload.quality,
+             "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
              "error":None,"created":now}
         jobs[jid]=job
     threading.Thread(target=convert,args=(jid,vid,payload.format,payload.quality),daemon=True).start()
@@ -205,7 +237,7 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
     try:
         change(jid,state="working",progress=8,message="Checking uploaded media…")
         probe=subprocess.run(
-            ["ffprobe","-v","error","-show_entries","format=duration:stream=codec_type",
+            ["ffprobe","-v","error","-show_entries","format=duration:stream=codec_type,codec_name,height",
              "-of","json",str(source)],capture_output=True,text=True,timeout=30,check=False)
         if probe.returncode != 0:
             raise ValueError("The uploaded file is not valid media or cannot be read.")
@@ -227,14 +259,25 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
         cmd=["ffmpeg","-hide_banner","-nostdin","-loglevel","error",
              "-nostats","-progress","pipe:1","-y","-i",str(source)]
         if fmt=="mp3":
-            cmd+=["-map","0:a:0","-vn","-c:a","libmp3lame","-b:a",str(quality)+"k"]
+            cmd+=["-map","0:a:0","-vn","-c:a","libmp3lame","-b:a",str(320 if quality==0 else quality)+"k"]
         else:
-            # Never upscale; keep dimensions compatible with H.264.
-            cmd+=["-map","0:v:0","-map","0:a:0?","-vf",
-                  "scale=-2:min(ih\\,"+str(quality)+")",
-                  "-c:v","libx264","-preset","veryfast","-crf","23",
-                  "-pix_fmt","yuv420p","-c:a","aac","-b:a","128k",
-                  "-movflags","+faststart"]
+            # Auto preserves compatible H.264/AAC or HEVC/AAC sources without
+            # losing quality. Other codecs are converted at high quality,
+            # retaining the full source resolution (no automatic downscale).
+            video=next((s for s in streams if s.get("codec_type")=="video"),{})
+            audio=next((s for s in streams if s.get("codec_type")=="audio"),{})
+            can_copy=(quality==0 and video.get("codec_name") in ("h264","hevc")
+                      and (not has_audio or audio.get("codec_name")=="aac"))
+            cmd+=["-map","0:v:0","-map","0:a:0?"]
+            if can_copy:
+                cmd+=["-c:v","copy","-c:a","copy"]
+            else:
+                if quality!=0:
+                    cmd+=["-vf","scale=-2:min(ih\\,"+str(quality)+")"]
+                cmd+=["-c:v","libx264","-preset","veryfast",
+                      "-crf","18" if quality==0 else "23","-pix_fmt","yuv420p",
+                      "-c:a","aac","-b:a","256k" if quality==0 else "128k"]
+            cmd+=["-movflags","+faststart"]
         cmd += [str(output)]
         timeout=max(120,min(1800,int(duration*5)))
         error_lines=[]
@@ -267,7 +310,7 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
             raise ValueError("Converted file exceeds the maximum permitted size.")
         source.unlink(missing_ok=True)
         change(jid,state="ready",progress=100,message="Ready to download",
-               file=str(output),ended=time.time())
+               file=str(output),actual_quality=quality_label(output,fmt),ended=time.time())
     except Exception as exc:
         log.warning("Uploaded media conversion %s failed (%s)",jid,type(exc).__name__)
         change(jid,state="error",progress=0,message="Conversion failed",
@@ -281,7 +324,7 @@ async def upload_media(
     request: Request,
     file: UploadFile = File(...),
     format: Literal["mp3","mp4"] = Form(...),
-    quality: int = Form(...),
+    quality: int = Form(0),
     rights_confirmed: bool = Form(False),
 ):
     if not rights_confirmed:
@@ -307,7 +350,7 @@ async def upload_media(
         quota[ip].append(now)
         jobs[jid]={"id":jid,"state":"receiving","progress":1,
                    "message":"Receiving file…","title":Path(name).stem[:100] or "Uploaded media",
-                   "thumbnail":None,"duration":None,"format":format,"quality":quality,
+                   "thumbnail":None,"duration":None,"format":format,"quality":quality,"actual_quality":None,
                    "error":None,"created":now}
     folder=MEDIA/jid
     folder.mkdir(mode=0o700,parents=True,exist_ok=True)
