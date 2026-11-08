@@ -143,6 +143,8 @@ def cleanup():
                 STORE.put("quota" if bucket is quota else "contact_quota",ip,bucket.get(ip,[]))
     for k in expired: shutil.rmtree(MEDIA/k,ignore_errors=True)
     for bid in expired_batches: shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
+    # Support submissions are private and have a defined retention window.
+    STORE.prune("contact",90*86400)
 
 
 def ensure_disk_space():
@@ -911,6 +913,15 @@ def require_admin(request:Request):
 def admin_contacts(request:Request):
     require_admin(request)
     return {"messages":STORE.messages(100)}
+
+
+@app.delete("/api/admin/contacts/{message_id}")
+def admin_delete_contact(message_id:str,request:Request):
+    require_admin(request)
+    if not re.fullmatch(r"[a-f0-9]{32}",message_id):
+        raise HTTPException(400,"Invalid message ID.")
+    STORE.drop("contact",message_id)
+    return {"deleted":True}
 
 
 @app.get("/api/admin/overview")
