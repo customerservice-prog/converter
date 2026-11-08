@@ -109,8 +109,10 @@ function updateProgress(data){
   if(data.state==="ready"){
     $("jobPercent").textContent="100%";
     $("downloadButton").href=data.download_url;
-    $("downloadButton").textContent="↓ Download "+data.format.toUpperCase()+" file";
+    $("downloadButton").textContent="↓ Download "+data.format.toUpperCase()+" file (fastest)";
     $("downloadButton").hidden=false;
+    $("folderDownload").href=data.folder_url;
+    $("folderDownload").hidden=!data.folder_url;
     $("jobStatus").textContent="Your file is ready!";
   }
   if(data.state==="error"){
@@ -168,6 +170,7 @@ async function submitConversion(e){
     $("convertForm").hidden=true;
     $("jobPanel").hidden=false;
     $("downloadButton").hidden=true;
+    $("folderDownload").hidden=true;
     $("uploadFallbackButton").hidden=true;
     showError("jobError","");
     updateProgress(data);
