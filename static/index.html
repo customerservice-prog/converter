@@ -5,8 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#060c1d">
   <meta name="description" content="Convert permitted YouTube videos to MP3 or MP4. Fast, simple, no account needed.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://clipconvert-web-production.up.railway.app/">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://clipconvert-web-production.up.railway.app/">
   <meta property="og:title" content="ClipConvert — Simple MP3 & MP4 conversion">
   <meta property="og:description" content="Paste a YouTube link, choose a format, and download.">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="ClipConvert — YouTube to MP3 and MP4">
+  <meta name="twitter:description" content="Convert authorized media with best-available quality and organized downloads.">
   <title>ClipConvert — YouTube to MP3 & MP4</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/style.css">
@@ -84,6 +91,7 @@
               <p id="batchError" class="form-error" role="alert" hidden></p>
               <a id="batchDownload" class="download-button" href="#" hidden>↓ Download all videos (.zip)</a>
               <p class="batch-note">One organized ZIP, with a separate named folder for each successful video. You can also download individual results above.</p>
+              <button id="batchRetry" type="button" class="fallback-button" hidden>↻ Retry only failed videos</button>
               <button id="batchReset" type="button" class="start-over" hidden>↶ Convert another batch</button>
             </section>
             <div id="jobPanel" class="job-panel" aria-live="polite" hidden>
@@ -95,6 +103,7 @@
               <a id="folderDownload" class="folder-download-button" href="#" hidden>↓ Download file only (fastest)</a>
               <p id="folderHelp" class="folder-help">The main download is a ZIP containing a dedicated folder for each video. Choose the file-only link for the fastest download.</p>
               <button id="uploadFallbackButton" type="button" class="fallback-button" hidden>↑ Convert a file from your device instead</button>
+              <button id="retryVideoButton" type="button" class="fallback-button" hidden>↻ Retry this video</button>
               <button id="resetButton" type="button" class="start-over">↶ Convert another video</button>
             </div>
           </div>
@@ -104,6 +113,10 @@
           <div class="feature-item"><span class="strip-symbol" aria-hidden="true">✧</span><div><strong>Quality on your terms</strong><small>Best available MP3 &amp; MP4</small></div></div>
           <div class="feature-item"><span class="strip-symbol" aria-hidden="true">ϟ</span><div><strong>One simple workflow</strong><small>Paste, convert, download</small></div></div>
           <div class="feature-item"><span class="strip-symbol" aria-hidden="true">▱</span><div><strong>Made for any screen</strong><small>Desktop, phone or tablet</small></div></div>
+        </section>
+        <section id="historySection" class="recent-downloads" aria-label="Recent conversions" hidden>
+          <div class="history-heading"><div><span class="overline">YOUR CONVERSION HISTORY</span><h2>Pick up where you left off.</h2><p>Stored in this browser. Downloads are available while their server files are retained.</p></div><button type="button" id="historyClear">Clear list</button></div>
+          <div id="historyList" class="history-list"></div>
         </section>
         <section class="how" id="how"><div class="section-head"><span class="overline">EFFORTLESS FROM START TO FINISH</span><h2>Three steps. <span>That's it.</span></h2><p>No installation. No learning curve. Just the format you want.</p></div>
           <div class="steps">
