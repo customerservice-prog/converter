@@ -49,7 +49,7 @@ jobs:
                   code,body,_=request("/api/health")
                   data=json.loads(body)
                   assert code==200 and data["status"]=="ok" and data["ffmpeg"],data
-                  if "organized_folders" not in data.get("features",[]):
+                  if "batch_links" not in data.get("features",[]):
                       raise RuntimeError("New upload release is not live yet")
                   print("OK: deployed health and FFmpeg",data,flush=True)
                   break
@@ -116,5 +116,43 @@ jobs:
               zstatus,zdata,zheaders=request(state["folder_url"])
               assert zstatus==200 and zdata[:2]==b"PK",("Broken folder download",fmt,zstatus,zdata[:80])
               print("YOUTUBE_URL_RESULT: WORKING",fmt,"download bytes checked:",len(body),"ZIP OK",flush=True)
+          # Verify two different YouTube links become two independently
+          # downloadable videos and one ZIP with two named folders.
+          sources=["https://youtu.be/NY6acnscmwo","https://youtu.be/aqz-KE-bpKQ"]
+          payload=json.dumps({"links":sources,"format":"mp3","quality":0,
+                              "rights_confirmed":True}).encode()
+          code,body,_=request("/api/batches",payload,"application/json")
+          assert code==202,("Unable to start real batch",code,body[:300])
+          batch_id=json.loads(body)["id"]
+          print("BATCH START",batch_id,flush=True)
+          for i in range(240):
+              code,body,_=request("/api/batches/"+batch_id)
+              assert code==200,("Batch status HTTP failure",code,body[:300])
+              batch=json.loads(body)
+              if batch["state"] in ("complete","partial","failed"):
+                  break
+              if i%15==0:
+                  print("BATCH PROGRESS",batch["processed"],"of",batch["total"],flush=True)
+              time.sleep(2)
+          assert batch["state"]=="complete",("Multi-link batch did not finish",batch)
+          assert batch["succeeded"]==2 and batch["failed"]==0,batch
+          assert len(batch["items"])==2,batch
+          for item in batch["items"]:
+              assert item["state"]=="ready" and item.get("download_url"),item
+              c,b,h=request(item["download_url"])
+              assert c==200 and len(b)>10000,("Video in batch could not be downloaded",c,len(b))
+          import zipfile
+          with urllib.request.urlopen(base+batch["download_url"],timeout=90) as response:
+              blob=response.read(110_000_001)
+              assert len(blob)<=110_000_000,"Batch archive unexpectedly large"
+              assert response.headers["Content-Type"]=="application/zip",response.headers["Content-Type"]
+          with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+              names=archive.namelist()
+              media=[p for p in names if p.endswith(".mp3")]
+              assert len(media)==2,names
+              assert len({p.split("/")[0] for p in media})==2,names
+              assert "Batch Results.txt" in names,names
+              assert all(archive.getinfo(p).compress_type==zipfile.ZIP_STORED for p in media)
+          print("BATCH_RESULT: TWO VIDEOS, SEPARATE FOLDERS, ONE ZIP WORKING",flush=True)
           print("ALL PRODUCTION CONVERSION CHECKS PASSED",flush=True)
           PY
