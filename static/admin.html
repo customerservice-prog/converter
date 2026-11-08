@@ -66,6 +66,19 @@ async function load(){
       box.append(element("p",item.message||""));
       box.append(element("small",new Date(item.created*1000).toLocaleString()+
         (item.emailed?" · Email sent":" · Saved in inbox")));
+      const remove=element("button","Delete message");
+      remove.type="button";
+      remove.addEventListener("click",async()=>{
+        if(!confirm("Permanently delete this contact message?"))return;
+        remove.disabled=true;
+        try{
+          const response=await fetch("/api/admin/contacts/"+encodeURIComponent(item.id),
+             {method:"DELETE",headers:{"X-Admin-Token":key}});
+          if(!response.ok)throw Error("Could not delete message");
+          await load();
+        }catch(err){$("status").className="error";$("status").textContent=err.message;remove.disabled=false;}
+      });
+      box.append(remove);
       return box;
     });
     $("messages").replaceChildren(...(messages.length?messages:[element("p","No contact requests yet.")]));
