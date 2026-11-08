@@ -35,15 +35,32 @@
           <div class="converter-card">
             <div class="card-heading"><div><div class="card-kicker">START HERE</div><h2>Convert a video</h2></div><div class="card-heading-tag"><span class="status-dot"></span> Online tool</div></div>
             <form id="convertForm" novalidate>
+              <div class="source-tabs" role="group" aria-label="Choose source">
+                <button id="youtubeSourceButton" type="button" class="source-tab active" aria-pressed="true">↗ YouTube link</button>
+                <button id="fileSourceButton" type="button" class="source-tab" aria-pressed="false">↑ Upload file</button>
+              </div>
+              <div id="urlSourceArea">
               <label for="videoUrl" class="field-label">YouTube video URL</label>
               <div class="url-field">
                 <span class="url-field-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 0 0 7.07 0l2-2A5 5 0 0 0 12 3.93l-1.15 1.15M14 11a5 5 0 0 0-7.07 0l-2 2A5 5 0 0 0 12 20.07l1.15-1.15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
                 <input type="url" id="videoUrl" name="url" placeholder="Paste a YouTube link here…" autocomplete="url" spellcheck="false" required>
                 <button class="paste-button" type="button" id="pasteButton"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="5" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M9 5V3h6v2" stroke="currentColor" stroke-width="1.8"/></svg> Paste</button>
               </div>
+              </div>
+              <div id="uploadSourceArea" hidden>
+                <label class="field-label" for="uploadInput">Choose your video or audio file</label>
+                <label class="upload-drop" for="uploadInput">
+                  <span class="upload-symbol" aria-hidden="true">↑</span>
+                  <strong id="uploadFileName">Choose a file from your device</strong>
+                  <span>MP4, MOV, WEBM, MKV, MP3, M4A, WAV, FLAC, OGG or AAC</span>
+                  <span>Maximum 100 MB · File stays private and is deleted automatically</span>
+                </label>
+                <input id="uploadInput" type="file" accept="video/*,audio/*,.m4a,.flac,.mkv,.aac" class="visually-hidden">
+              </div>
               <div class="format-row"><div><div class="field-label">Output format</div><div class="format-buttons" role="group" aria-label="Output format"><button class="format-option selected" type="button" data-format="mp3" aria-pressed="true"><span class="format-symbol">♫</span> MP3 <span class="option-caption">Audio</span></button><button class="format-option" type="button" data-format="mp4" aria-pressed="false"><span class="format-symbol">▣</span> MP4 <span class="option-caption">Video</span></button></div></div><div class="quality-wrap"><label for="quality" class="field-label">Quality</label><select id="quality" name="quality"><option value="128">128 kbps</option><option value="192" selected>192 kbps</option><option value="320">320 kbps</option></select></div></div>
               <label class="permission-check"><input type="checkbox" id="rightsCheck"><span>I own this content or have permission to download it.</span></label>
               <div class="form-error" id="formError" role="alert" hidden></div>
+              <p class="source-hint" id="youtubeHint">Some YouTube videos may be restricted on cloud servers. If a link is unavailable, use a media file you have permission to convert.</p>
               <button class="convert-button" id="convertButton" type="submit"><span>Convert now</span><span class="convert-arrow" aria-hidden="true">↗</span></button>
               <div class="form-footnote"><span><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m4 10 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> No account</span><span>✦ Free to use</span><span>♧ Mobile friendly</span></div>
             </form>
@@ -53,6 +70,7 @@
               <div class="progress-track" role="progressbar" aria-label="Conversion progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressTrack"><span id="progressFill"></span></div>
               <div class="job-error" id="jobError" role="alert" hidden></div>
               <a id="downloadButton" class="download-button" href="#" hidden>↓ Download your file</a>
+              <button id="uploadFallbackButton" type="button" class="fallback-button" hidden>↑ Convert a file from your device instead</button>
               <button id="resetButton" type="button" class="start-over">↶ Convert another video</button>
             </div>
           </div>

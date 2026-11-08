@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging, os, re, shutil, smtplib, threading, time, uuid
+import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json
 from collections import defaultdict
 from email.message import EmailMessage
 from pathlib import Path
@@ -7,7 +7,7 @@ from urllib.parse import urlparse, parse_qs
 from urllib.request import Request as HttpRequest, urlopen
 from typing import Literal
 import yt_dlp
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -18,6 +18,8 @@ MAX_ACTIVE=max(1,int(os.getenv("MAX_ACTIVE_JOBS","2")))
 DAILY_LIMIT=max(1,int(os.getenv("DAILY_LIMIT","20")))
 FILE_LIMIT=max(10,int(os.getenv("MAX_FILE_MB","512")))*1024*1024
 TTL=max(300,int(os.getenv("FILE_TTL_SECONDS","3600")))
+MAX_UPLOAD_BYTES=max(5,int(os.getenv("MAX_UPLOAD_MB","100")))*1024*1024
+UPLOAD_EXTENSIONS={".mp4",".mov",".m4v",".webm",".mkv",".mp3",".m4a",".wav",".flac",".ogg",".aac"}
 ID=re.compile(r"^[A-Za-z0-9_-]{11}$")
 HOSTS={"youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"}
 DURATION_LIMIT={"mp3":14400,"mp4":1800}
@@ -94,8 +96,24 @@ def convert(jid,vid,fmt,quality):
         opts={"js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
               "cachedir":False,"socket_timeout":20,"retries":2,"fragment_retries":2,
               "outtmpl":str(directory/"%(id)s.%(ext)s"),"restrictfilenames":True}
-        with yt_dlp.YoutubeDL({**opts,"skip_download":True}) as ydl:
-            info=ydl.extract_info(url,download=False)
+        # A second supported YouTube client profile may work if the default
+        # client is challenged. Never attempt to bypass a login or DRM gate.
+        for clients in (None, ("tv", "web_safari")):
+            check_opts={**opts,"skip_download":True}
+            if clients:
+                check_opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
+            try:
+                with yt_dlp.YoutubeDL(check_opts) as ydl:
+                    info=ydl.extract_info(url,download=False)
+                if clients:
+                    opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
+                break
+            except yt_dlp.utils.DownloadError as e:
+                challenge=("sign in to confirm" in str(e).lower() or "not a bot" in str(e).lower())
+                if clients is None and challenge:
+                    log.info("YouTube challenged the default profile for job %s; testing the alternate client",jid)
+                    continue
+                raise
         if not info or info.get("is_live") or info.get("live_status") in ("is_live","is_upcoming"):
             raise ValueError("Live videos can only be converted after they end.")
         duration=info.get("duration")
@@ -130,7 +148,13 @@ def convert(jid,vid,fmt,quality):
         change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),ended=time.time())
     except Exception as exc:
         log.warning("Job %s failed: %s",jid,type(exc).__name__)
-        msg=str(exc) if isinstance(exc,ValueError) else "Conversion failed. YouTube may have restricted this video or this server."
+        text=str(exc).lower()
+        if "sign in to confirm" in text or "not a bot" in text:
+            msg=("YouTube is requiring sign-in verification from this server. "
+                 "This link cannot be converted here right now. If you have the media file, "
+                 "choose Upload File to convert it instead.")
+        else:
+            msg=str(exc) if isinstance(exc,ValueError) else "Conversion failed. This video may be restricted or temporarily unavailable."
         change(jid,state="error",progress=0,message="Conversion failed",error=msg,ended=time.time())
         shutil.rmtree(directory,ignore_errors=True)
 
@@ -146,7 +170,7 @@ async def headers(request:Request,call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__}
+    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),"yt_dlp":yt_dlp.version.__version__, "features":["upload","youtube","thumbnail"]}
 
 @app.post("/api/jobs",status_code=202)
 def create(payload:ConvertRequest,request:Request):
@@ -157,7 +181,7 @@ def create(payload:ConvertRequest,request:Request):
     cleanup()
     now=time.time(); ip=request.client.host if request.client else "unknown"
     with mutex:
-        if sum(j["state"] in ("queued","working") for j in jobs.values())>=MAX_ACTIVE:
+        if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_ACTIVE:
             raise HTTPException(503,"The converter is busy. Please try again.")
         if len(quota[ip])>=DAILY_LIMIT: raise HTTPException(429,"Daily download limit reached.")
         quota[ip].append(now); jid=uuid.uuid4().hex
@@ -167,6 +191,145 @@ def create(payload:ConvertRequest,request:Request):
         jobs[jid]=job
     threading.Thread(target=convert,args=(jid,vid,payload.format,payload.quality),daemon=True).start()
     return public(job)
+
+def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) -> None:
+    folder=MEDIA/jid
+    source=folder/("source"+extension)
+    output=folder/("converted."+fmt)
+    try:
+        change(jid,state="working",progress=8,message="Checking uploaded media…")
+        probe=subprocess.run(
+            ["ffprobe","-v","error","-show_entries","format=duration:stream=codec_type",
+             "-of","json",str(source)],capture_output=True,text=True,timeout=30,check=False)
+        if probe.returncode != 0:
+            raise ValueError("The uploaded file is not valid media or cannot be read.")
+        try:
+            metadata=json.loads(probe.stdout)
+            duration=float(metadata.get("format",{}).get("duration","0"))
+            streams=metadata.get("streams",[])
+        except (ValueError,TypeError,KeyError) as exc:
+            raise ValueError("Unable to read this file's media properties.") from exc
+        if not 0 < duration <= DURATION_LIMIT[fmt]:
+            raise ValueError("The maximum "+fmt.upper()+" duration is "+str(DURATION_LIMIT[fmt]//60)+" minutes.")
+        has_audio=any(x.get("codec_type")=="audio" for x in streams)
+        has_video=any(x.get("codec_type")=="video" for x in streams)
+        if fmt=="mp3" and not has_audio:
+            raise ValueError("This file has no audio track to convert.")
+        if fmt=="mp4" and not has_video:
+            raise ValueError("An MP4 video requires a source file with a video track.")
+        change(jid,title=name,duration=int(duration),progress=15,message="Converting uploaded file…")
+        cmd=["ffmpeg","-hide_banner","-nostdin","-loglevel","error",
+             "-nostats","-progress","pipe:1","-y","-i",str(source)]
+        if fmt=="mp3":
+            cmd+=["-map","0:a:0","-vn","-c:a","libmp3lame","-b:a",str(quality)+"k"]
+        else:
+            # Never upscale; keep dimensions compatible with H.264.
+            cmd+=["-map","0:v:0","-map","0:a:0?","-vf",
+                  "scale=-2:min(ih\\,"+str(quality)+")",
+                  "-c:v","libx264","-preset","veryfast","-crf","23",
+                  "-pix_fmt","yuv420p","-c:a","aac","-b:a","128k",
+                  "-movflags","+faststart"]
+        cmd += [str(output)]
+        timeout=max(120,min(1800,int(duration*5)))
+        error_lines=[]
+        with subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                              text=True,bufsize=1) as process:
+            timer=threading.Timer(timeout,process.kill)
+            timer.daemon=True
+            timer.start()
+            try:
+                for line in process.stdout:
+                    line=line.strip()
+                    if line.startswith(("out_time_us=","out_time_ms=")):
+                        try:
+                            seconds=float(line.split("=",1)[1])/1_000_000
+                            change(jid,progress=min(95,15+int(80*seconds/duration)))
+                        except (ValueError,ZeroDivisionError):
+                            pass
+                    elif line and len(error_lines)<20:
+                        error_lines.append(line[:250])
+                    if output.exists() and output.stat().st_size>FILE_LIMIT:
+                        process.kill()
+                        raise ValueError("Converted file exceeds the maximum permitted size.")
+                code=process.wait()
+            finally:
+                timer.cancel()
+        if code!=0 or not output.is_file() or output.stat().st_size<1024:
+            log.warning("Local media conversion failed for job %s: %s",jid," | ".join(error_lines)[-1000:])
+            raise ValueError("FFmpeg could not convert this file. Check the media or try another format.")
+        if output.stat().st_size>FILE_LIMIT:
+            raise ValueError("Converted file exceeds the maximum permitted size.")
+        source.unlink(missing_ok=True)
+        change(jid,state="ready",progress=100,message="Ready to download",
+               file=str(output),ended=time.time())
+    except Exception as exc:
+        log.warning("Uploaded media conversion %s failed (%s)",jid,type(exc).__name__)
+        change(jid,state="error",progress=0,message="Conversion failed",
+               error=str(exc) if isinstance(exc,ValueError) else "Could not convert this file.",
+               ended=time.time())
+        shutil.rmtree(folder,ignore_errors=True)
+
+
+@app.post("/api/upload",status_code=202)
+async def upload_media(
+    request: Request,
+    file: UploadFile = File(...),
+    format: Literal["mp3","mp4"] = Form(...),
+    quality: int = Form(...),
+    rights_confirmed: bool = Form(False),
+):
+    if not rights_confirmed:
+        raise HTTPException(400,"Confirm that you have permission to use this media.")
+    if quality not in QUALITIES[format]:
+        raise HTTPException(400,"Choose a supported format and quality.")
+    name=Path(file.filename or "").name
+    extension=Path(name).suffix.lower()
+    if extension not in UPLOAD_EXTENSIONS:
+        raise HTTPException(400,"Upload an MP4, MOV, WEBM, MKV, MP3, M4A, WAV, FLAC, OGG or AAC file.")
+    length=request.headers.get("content-length","")
+    if length.isdecimal() and int(length)>MAX_UPLOAD_BYTES+1048576:
+        raise HTTPException(413,"The file is too large. Upload up to "+str(MAX_UPLOAD_BYTES//1048576)+" MB.")
+    cleanup()
+    ip=request.client.host if request.client else "unknown"
+    now=time.time()
+    with mutex:
+        if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_ACTIVE:
+            raise HTTPException(503,"All converters are busy. Please try again.")
+        if len(quota[ip])>=DAILY_LIMIT:
+            raise HTTPException(429,"Daily conversion limit reached.")
+        jid=uuid.uuid4().hex
+        quota[ip].append(now)
+        jobs[jid]={"id":jid,"state":"receiving","progress":1,
+                   "message":"Receiving file…","title":Path(name).stem[:100] or "Uploaded media",
+                   "thumbnail":None,"duration":None,"format":format,"quality":quality,
+                   "error":None,"created":now}
+    folder=MEDIA/jid
+    folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+    source=folder/("source"+extension)
+    size=0
+    try:
+        with source.open("wb") as dst:
+            while True:
+                chunk=await file.read(1024*1024)
+                if not chunk: break
+                size+=len(chunk)
+                if size>MAX_UPLOAD_BYTES:
+                    raise HTTPException(413,"The file exceeds the "+str(MAX_UPLOAD_BYTES//1048576)+" MB limit.")
+                dst.write(chunk)
+        if size<1024: raise HTTPException(400,"This media file is empty.")
+    except Exception:
+        with mutex:
+            jobs.pop(jid,None)
+        shutil.rmtree(folder,ignore_errors=True)
+        raise
+    finally:
+        await file.close()
+    change(jid,state="queued",progress=5,message="Processing upload…")
+    thread=threading.Thread(target=convert_upload,
+        args=(jid,extension,Path(name).stem[:100] or "Uploaded media",format,quality),daemon=True)
+    thread.start()
+    return public(jobs[jid])
+
 
 @app.get("/api/jobs/{jid}")
 def get_job(jid:str):

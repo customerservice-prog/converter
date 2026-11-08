@@ -82,3 +82,12 @@ Load the /extension directory as an unpacked developer extension in Chrome/Edge/
 ## Testing
 
 Unit tests cover URL allowlisting and supported formats; GitHub Actions runs them on push. Check /api/health to verify FFmpeg is on the server, and check the actual browser conversion journey after deployment. Avoid claiming real YouTube conversion is verified until tested on the deployed server.
+
+
+## November 2026 reliability update
+
+Railway's container runs and serves the interface correctly. YouTube sometimes responds to Railway's shared datacenter egress IP with a **"Sign in to confirm you're not a bot"** challenge before any media can be retrieved. The downloader now tries one alternate supported yt-dlp player client profile, but this does not guarantee YouTube permits the download. The server does not solicit users' account cookies or pretend all YouTube links work.
+
+**Practical fallback:** Choose **Upload file** on the converter page, select an authorized video/audio file (up to 100MB), choose MP3 or MP4 and convert it with the server's local FFmpeg. Temporary upload files are deleted after processing and downloads expire after the configured TTL. Uploads are rate-limited and inspected with ffprobe before conversion. MAX_UPLOAD_MB defaults to 100 and may be configured on the Railway service. The file-based path is tested separately from the YouTube extractor.
+
+The site's generic HTTPS address is https://clipconvert-web-production.up.railway.app.

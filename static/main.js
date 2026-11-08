@@ -61,7 +61,19 @@ function getId(raw){
     return /^[\w-]{11}$/.test(found)?found:"";
   }catch{return "";}
 }
-let format="mp3",pollTimer=null;
+let format="mp3",pollTimer=null,sourceType="youtube";
+function setSource(value){
+  sourceType=value;
+  $("urlSourceArea").hidden=value!=="youtube";
+  $("uploadSourceArea").hidden=value!=="file";
+  $("youtubeHint").hidden=value!=="youtube";
+  for(const [which,id] of [["youtube","youtubeSourceButton"],["file","fileSourceButton"]]){
+    const active=value===which;
+    $(id).classList.toggle("active",active);
+    $(id).setAttribute("aria-pressed",String(active));
+  }
+  showError("formError","");
+}
 function setFormat(which){
   format=which;
   document.querySelectorAll(".format-option").forEach(b=>{
@@ -95,7 +107,11 @@ function updateProgress(data){
     $("downloadButton").hidden=false;
     $("jobStatus").textContent="Your file is ready!";
   }
-  if(data.state==="error"){showError("jobError",data.error||"Conversion failed.");$("jobStatus").textContent="Unable to convert";}
+  if(data.state==="error"){
+    showError("jobError",data.error||"Conversion failed.");
+    $("jobStatus").textContent="Unable to convert";
+    $("uploadFallbackButton").hidden=false;
+  }
 }
 async function poll(id){
   try{
@@ -105,26 +121,58 @@ async function poll(id){
   }catch(e){showError("jobError",e.message);$("jobStatus").textContent="Could not check conversion";}
 }
 async function submitConversion(e){
-  e.preventDefault();showError("formError","");
-  const url=clean($("videoUrl").value),id=getId(url);
-  if(!id){showError("formError","Enter a valid YouTube video URL (including Shorts and share links).");return;}
-  if(!$("rightsCheck").checked){showError("formError","Please confirm you have permission to download this media.");return;}
+  e.preventDefault();
+  showError("formError","");
+  if(!$("rightsCheck").checked){
+    showError("formError","Please confirm you have permission to download or convert this media.");
+    return;
+  }
+  if(sourceType==="youtube" && !getId(clean($("videoUrl").value))){
+    showError("formError","Enter a valid YouTube video URL (including Shorts and share links).");
+    return;
+  }
+  if(sourceType==="file"){
+    const file=$("uploadInput").files[0];
+    if(!file){showError("formError","Choose an audio or video file to upload.");return;}
+    if(file.size>100*1024*1024){
+      showError("formError","Files must be 100 MB or smaller.");
+      return;
+    }
+  }
   $("convertButton").disabled=true;
+  $("convertButton").querySelector("span").textContent=sourceType==="file"?"Uploading…":"Starting…";
   try{
-    const data=await jsonOrError(await fetch("/api/jobs",{
-      method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({url:url,format:format,quality:Number($("quality").value),rights_confirmed:true})
-    }));
-    $("convertForm").hidden=true;$("jobPanel").hidden=false;
-    $("downloadButton").hidden=true;showError("jobError","");
-    updateProgress(data);poll(data.id);
+    let response;
+    if(sourceType==="file"){
+      const payload=new FormData();
+      payload.append("file",$("uploadInput").files[0]);
+      payload.append("format",format);
+      payload.append("quality",$("quality").value);
+      payload.append("rights_confirmed","true");
+      response=await fetch("/api/upload",{method:"POST",body:payload});
+    }else{
+      response=await fetch("/api/jobs",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({url:clean($("videoUrl").value),format,
+          quality:Number($("quality").value),rights_confirmed:true})});
+    }
+    const data=await jsonOrError(response);
+    $("convertForm").hidden=true;
+    $("jobPanel").hidden=false;
+    $("downloadButton").hidden=true;
+    $("uploadFallbackButton").hidden=true;
+    showError("jobError","");
+    updateProgress(data);
+    poll(data.id);
   }catch(err){showError("formError",err.message);}
-  finally{$("convertButton").disabled=false;}
+  finally{
+    $("convertButton").disabled=false;
+    $("convertButton").querySelector("span").textContent="Convert now";
+  }
 }
 function resetConverter(){
   if(pollTimer)clearTimeout(pollTimer);
   $("convertForm").hidden=false;$("jobPanel").hidden=true;
-  $("videoUrl").value="";$("rightsCheck").checked=false;
+  $("videoUrl").value="";$("uploadInput").value="";$("uploadFileName").textContent="Choose a file from your device";$("rightsCheck").checked=false;
   showError("formError","");window.scrollTo({top:0,behavior:"smooth"});$("videoUrl").focus();
 }
 function bookmarklet(fmt){
@@ -171,6 +219,18 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("copyrightYear").textContent=new Date().getFullYear();
   document.querySelectorAll(".format-option").forEach(b=>b.addEventListener("click",()=>setFormat(b.dataset.format)));
   $("convertForm").addEventListener("submit",submitConversion);
+  $("youtubeSourceButton").addEventListener("click",()=>setSource("youtube"));
+  $("fileSourceButton").addEventListener("click",()=>setSource("file"));
+  $("uploadInput").addEventListener("change",()=>{
+    const file=$("uploadInput").files[0];
+    $("uploadFileName").textContent=file?file.name:"Choose a file from your device";
+    showError("formError","");
+  });
+  $("uploadFallbackButton").addEventListener("click",()=>{
+    resetConverter();
+    setSource("file");
+    $("uploadInput").focus();
+  });
   $("resetButton").addEventListener("click",resetConverter);
   $("pasteButton").addEventListener("click",async()=>{
     try{$("videoUrl").value=await navigator.clipboard.readText();$("videoUrl").focus();showError("formError","");}

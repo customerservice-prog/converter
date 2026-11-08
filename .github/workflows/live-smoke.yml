@@ -1,84 +1,97 @@
-name: Live production smoke test
+name: Live production checks
 on:
   push:
     paths:
       - '.github/workflows/live-smoke.yml'
+      - 'app.py'
+      - 'requirements.txt'
+      - 'static/**'
   workflow_dispatch:
 jobs:
   live:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check live site and permitted-media conversion
+      - name: Verify live site and on-server media conversion
         env:
           SITE: https://clipconvert-web-production.up.railway.app
         run: |
           python - <<'PY'
-          import json, os, sys, time, urllib.request, urllib.error
+          import io,json,os,struct,time,urllib.request,urllib.error,wave
           base=os.environ["SITE"].rstrip("/")
-          def get(path):
-              with urllib.request.urlopen(urllib.request.Request(base+path,headers={"User-Agent":"ClipConvertSmoke/1.0"}),timeout=25) as r:
-                  return r.status,r.read(65536),dict(r.headers)
-          def post(data):
-              req=urllib.request.Request(base+"/api/jobs",data=json.dumps(data).encode(),
-                  headers={"Content-Type":"application/json","User-Agent":"ClipConvertSmoke/1.0"},method="POST")
+          def request(path,payload=None,content_type=None):
+              headers={"User-Agent":"ClipConvertIntegrationTest/1.0"}
+              if content_type: headers["Content-Type"]=content_type
+              req=urllib.request.Request(base+path,data=payload,headers=headers)
               try:
-                  with urllib.request.urlopen(req,timeout=30) as r:
-                      return r.status,json.load(r)
-              except urllib.error.HTTPError as e:
-                  return e.code,json.load(e)
-          for attempt in range(36):
+                  with urllib.request.urlopen(req,timeout=60) as resp:
+                      return resp.status,resp.read(500000),dict(resp.headers)
+              except urllib.error.HTTPError as exc:
+                  return exc.code,exc.read(500000),dict(exc.headers)
+          def multipart(fields,filename,content):
+              bound="ClipConvertTestBound3f09"
+              segments=[]
+              for k,v in fields.items():
+                  segments.extend([("--"+bound+"\r\nContent-Disposition: form-data; name=\""+k+"\"\r\n\r\n"+str(v)+"\r\n").encode()])
+              segments.extend([("--"+bound+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\""+filename+"\"\r\nContent-Type: audio/wav\r\n\r\n").encode(),content,b"\r\n",("--"+bound+"--\r\n").encode()])
+              return b"".join(segments),"multipart/form-data; boundary="+bound
+          for attempt in range(70):
               try:
-                  status,body,headers=get("/api/health")
-                  details=json.loads(body)
-                  assert status==200 and details["status"]=="ok" and details["ffmpeg"] is True,details
-                  print("OK health",details,flush=True)
+                  code,body,_=request("/api/health")
+                  data=json.loads(body)
+                  assert code==200 and data["status"]=="ok" and data["ffmpeg"],data
+                  if "upload" not in data.get("features",[]):
+                      raise RuntimeError("New upload release is not live yet")
+                  print("OK: deployed health and FFmpeg",data,flush=True)
                   break
-              except Exception as e:
-                  print("Not yet ready:",str(e)[:150],flush=True)
-                  if attempt==35: raise
+              except Exception as exc:
+                  if attempt==69:raise
+                  if attempt%10==0:print("Waiting for updated release:",repr(exc)[:150],flush=True)
                   time.sleep(5)
-          for path,expected in [("/","ClipConvert"),("/faq","ClipConvert"),
-                               ("/assets/main.js","submitConversion"),
-                               ("/assets/style.css","converter-card")]:
-              status,body,headers=get(path)
-              assert status==200 and expected in body.decode(),(path,status)
-              print("OK public",path,status,flush=True)
-          invalid={"url":"https://youtu.be/aqz-KE-bpKQ","format":"mp3","quality":128}
-          status,data=post(invalid)
-          assert status==400,(status,data)
-          print("OK authorization required",flush=True)
-          invalid.update(rights_confirmed=True,url="http://127.0.0.1/private")
-          status,data=post(invalid)
-          assert status==400,(status,data)
-          print("OK rejected unauthorized hostname",flush=True)
-          # Big Buck Bunny is produced and CC BY 3.0 licensed by Blender Foundation.
-          # Blender Foundation: https://peach.blender.org/about/
-          url="https://www.youtube.com/watch?v=aqz-KE-bpKQ"
-          for format_,quality in (("mp3",128),("mp4",360)):
-              status,job=post({"url":url,"format":format_,"quality":quality,"rights_confirmed":True})
-              assert status==202,(format_,status,job)
-              jid=job["id"]
-              print("START",format_,jid,flush=True)
-              for attempt in range(180):
-                  status,body,headers=get("/api/jobs/"+jid)
-                  assert status==200,(format_,status)
-                  job=json.loads(body)
-                  if attempt%5==0 or job["state"] in ("ready","error"):
-                      print("PROGRESS",format_,job["state"],job["progress"],job.get("message"),
-                            (job.get("error") or "")[:200],flush=True)
-                  if job["state"]=="ready":
-                      with urllib.request.urlopen(base+job["download_url"],timeout=90) as resp:
-                          first=resp.read(16384)
-                          ct=resp.headers.get("Content-Type","")
-                          assert resp.status==200 and len(first)>1000,(format_,len(first),ct)
-                          assert ("audio/mpeg" in ct if format_=="mp3" else "video/mp4" in ct),(format_,ct)
-                      print("CONVERSION SUCCESS",format_, "bytes_sample=",len(first),flush=True)
-                      break
-                  if job["state"]=="error":
-                      raise RuntimeError(format_+" conversion failed: "+str(job.get("error")))
+          for path,needle in [("/","Upload file"),("/faq","ClipConvert"),("/assets/main.js","submitConversion"),("/assets/style.css","converter-card")]:
+              code,body,_=request(path)
+              assert code==200 and needle.lower() in body.decode().lower(),(path,code)
+              print("OK:",path,flush=True)
+          code,body,_=request("/api/jobs",json.dumps({"url":"https://youtu.be/NY6acnscmwo","format":"mp3","quality":128}).encode(),"application/json")
+          assert code==400,body
+          print("OK: rights confirmation required",flush=True)
+          audio=io.BytesIO()
+          with wave.open(audio,"wb") as wf:
+              wf.setnchannels(1);wf.setsampwidth(2);wf.setframerate(16000)
+              wf.writeframes(b"".join(struct.pack("<h",int(8000*(i%70)/70)) for i in range(16000)))
+          payload,content_type=multipart({"format":"mp3","quality":"128","rights_confirmed":"true"},"test.wav",audio.getvalue())
+          code,body,_=request("/api/upload",payload,content_type)
+          assert code==202,(code,body[:500])
+          jid=json.loads(body)["id"]
+          for i in range(90):
+              code,body,_=request("/api/jobs/"+jid)
+              assert code==200,code
+              job=json.loads(body)
+              if job["state"] in ("ready","error"):break
+              time.sleep(1)
+          assert job["state"]=="ready",job
+          code,body,headers=request(job["download_url"])
+          assert code==200 and len(body)>4000,(code,len(body))
+          assert "audio/mpeg" in headers["Content-Type"],headers["Content-Type"]
+          print("SUCCESS: upload to MP3 download works on Railway",flush=True)
+          # Informational URL check for the requested link. It may be challenged by YouTube.
+          payload=json.dumps({"url":"https://youtu.be/NY6acnscmwo",
+                              "format":"mp4","quality":360,
+                              "rights_confirmed":True}).encode()
+          code,body,_=request("/api/jobs",payload,"application/json")
+          if code==202:
+              jid=json.loads(body)["id"]
+              for i in range(40):
+                  code,body,_=request("/api/jobs/"+jid)
+                  state=json.loads(body)
+                  if state["state"] in ("ready","error"): break
                   time.sleep(2)
+              if state["state"]=="ready":
+                  print("YOUTUBE_URL_RESULT: WORKING",flush=True)
+              elif state["state"]=="error":
+                  print("YOUTUBE_URL_RESULT: BLOCKED / "+str(state.get("error")),flush=True)
               else:
-                  raise TimeoutError(format_+" did not complete in 6 minutes")
-          print("PRODUCTION SMOKE TEST ALL PASSED",flush=True)
+                  print("YOUTUBE_URL_RESULT: STILL_PROCESSING",flush=True)
+          else:
+              print("YOUTUBE_URL_RESULT: API_REJECTED",code,body[:200],flush=True)
           PY
