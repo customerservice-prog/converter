@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac, html
+import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac, html, hashlib, secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from email.message import EmailMessage
@@ -40,6 +40,31 @@ conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
 log=logging.getLogger("converter")
 app=FastAPI(title="Converter API",docs_url=None,redoc_url=None)
 app.mount("/assets",StaticFiles(directory=ROOT/"static"),name="assets")
+
+SESSION_SECRET=os.getenv("SESSION_SECRET") or os.getenv("ADMIN_TOKEN") or secrets.token_urlsafe(48)
+SESSION_COOKIE="cc_session"
+
+
+def session_signature(sid:str)->str:
+    return hmac.new(SESSION_SECRET.encode(),sid.encode(),hashlib.sha256).hexdigest()[:32]
+
+
+def verified_session(request:Request)->str|None:
+    cookie=request.cookies.get(SESSION_COOKIE,"")
+    if len(cookie)>80 or "." not in cookie:return None
+    sid,signature=cookie.split(".",1)
+    if re.fullmatch(r"[0-9a-f]{32}",sid) and hmac.compare_digest(
+        signature,session_signature(sid)):
+        return sid
+    return None
+
+
+def client_key(request:Request)->str:
+    """Stable, signed anonymous-browser bucket, with IP fallback for API callers."""
+    sid=verified_session(request)
+    if sid:return "session:"+sid
+    return "ip:"+(request.client.host if request.client else "unknown")
+
 
 def video_id(raw:str)->str:
     raw=(raw or "").strip()
@@ -375,6 +400,13 @@ async def headers(request:Request,call_next):
         result.headers["Strict-Transport-Security"]="max-age=31536000"
     if request.url.path.startswith(("/api/","/admin")):
         result.headers["X-Robots-Tag"]="noindex, nofollow"
+    if request.method=="GET" and not request.url.path.startswith(("/api/","/assets/","/admin")):
+        if not verified_session(request):
+            sid=uuid.uuid4().hex
+            cookie=sid+"."+session_signature(sid)
+            result.set_cookie(SESSION_COOKIE,cookie,max_age=86400*30,httponly=True,
+                              secure=os.getenv("SITE_URL","").startswith("https://"),
+                              samesite="lax")
     if request.url.path.startswith("/api/"): result.headers["Cache-Control"]="no-store"
     return result
 
@@ -469,7 +501,7 @@ def create_batch(payload:BatchRequest,request:Request):
         raise HTTPException(400,"Add at least two different YouTube videos.")
     cleanup()
     ensure_disk_space()
-    ip=request.client.host if request.client else "unknown"
+    ip=client_key(request)
     now=time.time()
     with mutex:
         if len(quota[ip])+len(ids)>DAILY_LIMIT:
@@ -610,7 +642,7 @@ def create(payload:ConvertRequest,request:Request):
     if payload.quality not in QUALITIES[payload.format]: raise HTTPException(400,"Unsupported format quality.")
     cleanup()
     ensure_disk_space()
-    now=time.time(); ip=request.client.host if request.client else "unknown"
+    now=time.time(); ip=client_key(request)
     with mutex:
         if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_QUEUE_JOBS:
             raise HTTPException(503,"The converter is busy. Please try again.")
@@ -737,7 +769,7 @@ async def upload_media(
         raise HTTPException(413,"The file is too large. Upload up to "+str(MAX_UPLOAD_BYTES//1048576)+" MB.")
     cleanup()
     ensure_disk_space()
-    ip=request.client.host if request.client else "unknown"
+    ip=client_key(request)
     now=time.time()
     with mutex:
         if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_QUEUE_JOBS:
@@ -893,7 +925,7 @@ def contact(payload:ContactRequest,request:Request):
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",payload.email):
         raise HTTPException(400,"Enter a valid email address.")
     now=time.time()
-    ip=request.client.host if request.client else "unknown"
+    ip=client_key(request)
     with mutex:
         contact_quota[ip]=[x for x in contact_quota[ip] if now-x<86400]
         if len(contact_quota[ip])>=3:
