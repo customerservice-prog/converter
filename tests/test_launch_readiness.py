@@ -27,6 +27,19 @@ class PersistentStorageTests(unittest.TestCase):
             two.drop("job","123")
             self.assertNotIn("123",StateStore(path).load("job"))
 
+    def test_contact_message_retention_pruning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            from datetime import datetime,timezone
+            import sqlite3
+            store=StateStore(Path(directory)/"state.sqlite3")
+            store.put("contact","stale",{"email":"old@example.org","created":0})
+            with sqlite3.connect(store.path) as db:
+                db.execute("UPDATE records SET changed=? WHERE kind='contact'",
+                           (time.time()-91*86400,))
+                db.commit()
+            self.assertEqual(store.prune("contact",90*86400),1)
+            self.assertNotIn("stale",store.load("contact"))
+
     def test_contact_messages_are_persisted(self):
         response=client.post("/api/contact",json={
             "name":"Test Visitor","email":"visitor@example.org",
@@ -51,6 +64,10 @@ class PersistentStorageTests(unittest.TestCase):
                                headers={"X-Admin-Token":"a-very-private-test-token"})
             self.assertEqual(allowed.status_code,200)
             self.assertIn("messages",allowed.json())
+            analytics=client.get("/api/admin/analytics",
+                                 headers={"X-Admin-Token":"a-very-private-test-token"})
+            self.assertEqual(analytics.status_code,200)
+            self.assertIn("daily",analytics.json())
             overview=client.get("/api/admin/overview",
                                 headers={"X-Admin-Token":"a-very-private-test-token"})
             self.assertEqual(overview.status_code,200)

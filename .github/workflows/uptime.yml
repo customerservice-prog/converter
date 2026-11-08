@@ -1,5 +1,8 @@
 name: ClipConvert public uptime
 on:
+  push:
+    paths:
+      - '.github/workflows/uptime.yml'
   schedule:
     - cron: "7,37 * * * *"
   workflow_dispatch:
@@ -32,6 +35,7 @@ jobs:
                       data=json.loads(body)
                       assert data["status"]=="ok" and data["ffmpeg"],data
                       assert data.get("storage_ready"),data
+                      assert int(data.get("storage_free_mb",0))>=200,("Low disk space",data)
                       assert "durable_jobs" in data.get("features",[]),data
                   if route=="/robots.txt":
                       assert b"Sitemap:" in body

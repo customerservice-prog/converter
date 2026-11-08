@@ -72,11 +72,11 @@ Load the /extension directory as an unpacked developer extension in Chrome/Edge/
 
 ## Important production constraints
 
-- The build code is complete, but this repository is **not automatically a live hosted website**. GitHub Actions runs syntax/unit checks, *not* a real YouTube end-to-end download.
+- The application is deployed at **https://clipconvert-web-production.up.railway.app**. Automated checks include real production MP3, MP4 and batch-download conversions, and a separate container restart-persistence test. YouTube restrictions may still change.
 - YouTube changes its extraction methods and may reject cloud datacenter addresses or restrict particular media. Not every video is guaranteed to work. The service does **not** bypass DRM, authentication, private-content restrictions or geographic access controls.
 - MP4 above 360p depends on source availability and compatible streams.
-- Jobs, quotas and media files are maintained on a single local instance. Scaling beyond one worker/instance requires Redis or another shared job queue, durable object storage and distributed rate limits. For public high traffic also add CDN, monitoring, resource caps, abuse handling and operational complaint workflows.
-- No ads or analytics are included in the application, but the Google Fonts request and the hosting platform may generate third-party access logs.
+- Jobs, anonymous-session rate-limit quotas, and download files now persist on a Railway volume using SQLite and local media storage, and incomplete work can resume after a restart. This is **single-instance durability**, not horizontal scaling. Additional replicas require Redis/shared workers and object storage. GitHub Actions performs lightweight uptime checks every 30 minutes; the operator dashboard reports health, inbox and aggregate conversion success/failures. Resource and abuse limits remain in force.
+- No ads or third-party analytics scripts are included. The operator dashboard stores aggregate daily success/failure counts without tracking individual visitor identities; Google Fonts and the hosting platform may still generate access logs.
 - Users must have rights to download the submitted media and comply with laws and applicable platform terms. The legal pages are preliminary and must be customized by the operator before launch.
 
 ## Testing
@@ -130,3 +130,19 @@ Batches share the normal 20-per-network-address rolling daily conversion quota. 
 - The test suite synthesizes an MP4 with Opus audio, repairs it, verifies the video stream is unchanged, decodes non-silent audio samples, and tests that AAC inputs are not re-encoded. The live production workflow checks that MP4 downloads actually report a verified AAC track.
 
 **Limitations:** Audio cannot be created from a source that has no audio track. A media player's hardware codec support for 4K video is a separate issue from the audio stream. Files downloaded before this change must be converted again; the server cannot retroactively modify an existing download.
+
+
+## Production hardening and user support (Nov 8, 2026)
+
+- **Persistent 5 GB Railway volume:** Mount /data; set MEDIA_DIR=/data/media and STATE_DB=/data/media/state.sqlite3. Startup fixes mounted-folder permissions before launching the uvicorn process as an unprivileged user with gosu.
+- **Durable SQLite state:** Jobs, batch IDs, temporary file metadata, session rate limits, contact submissions and aggregate daily conversion counts persist across container restarts. The app automatically resumes incomplete link jobs when possible; interrupted uploads may need to be uploaded again. Media files expire after their configured retention window (normally one hour).
+- **Queues:** MAX_ACTIVE_JOBS defaults to 2 running conversions, with MAX_QUEUE_JOBS defaulting to 32 waiting/active tasks. Conversion requests report their queue position. MIN_FREE_MB defaults to 200 to protect disk availability.
+- **Fair limits:** Browser visitors receive a signed HTTP-only anonymous session cookie for per-browser daily quotas. Direct API clients without cookies use the network address seen by the server. SESSION_SECRET must remain private and stable across deployments.
+- **Download history:** The homepage remembers only conversion IDs in that browser's localStorage, allowing return to jobs and batches while server files remain available. Users can clear this list. Retry endpoints allow up to two retries for failed YouTube jobs; batch retry preserves previously completed downloads.
+- **Private support:** Contact forms save messages in the SQLite inbox whether or not SMTP is configured. Visit /admin and enter the privately configured ADMIN_TOKEN to see messages, 14-day aggregate conversion metrics and free space. Support messages are automatically pruned at 90 days, and the operator can delete them sooner. SMTP_HOST, CONTACT_EMAIL and appropriate sender credentials are optional and currently not configured; submissions are saved but no email notifications are sent.
+- **Monitoring:** GitHub Actions workflows test actual conversion outputs, restart persistence and scheduled uptime (/api/health, assets and sitemap). Monitor failures in the GitHub Actions tab.
+- **SEO:** sitemap.xml, robots.txt, server-rendered per-route title/description/canonical metadata and social sharing meta tags. SITE_URL defaults to the Railway HTTPS domain. Replace with the final custom domain when one is selected.
+- **Security:** Signed session cookies, admin token authentication, anti-iframe headers, noindex API/admin, HTTPS headers, host allowlisting, rate/queue/disk limits, and non-root runtime. Operator legal identity, rights policy and final jurisdiction-specific terms still require review.
+
+### Remaining external configuration
+A custom branded domain and official support email have not been chosen for this project. The Railway domain and private support inbox work now. Do not reuse another business's domain, contact details or credentials without an explicit decision. Railway persistent storage incurs storage charges in addition to computing and bandwidth.
