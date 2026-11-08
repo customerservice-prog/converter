@@ -64,6 +64,8 @@ def video_id(raw:str)->str:
 def public(job):
     fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","audio_codec","audio_channels","error")
     data={key:job.get(key) for key in fields}
+    if job["state"]=="error" and job.get("video_id") and not job.get("batch_id") and int(job.get("retry_count",0))<2:
+        data["retry_url"]="/api/jobs/"+job["id"]+"/retry"
     if job["state"] in ("queued","working"):
         waiting=[k for k,v in jobs.items() if v.get("state") in ("queued","working")]
         waiting.sort(key=lambda k: jobs[k].get("created",0))
