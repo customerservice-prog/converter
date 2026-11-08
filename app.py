@@ -397,13 +397,21 @@ def convert(jid,vid,fmt,quality):
 
 @app.middleware("http")
 async def headers(request:Request,call_next):
+    # Reject oversized browser uploads before Starlette parses/spools the
+    # multipart payload. Enforce actual bytes again inside the upload handler.
+    if request.url.path=="/api/upload" and request.method=="POST":
+        raw=request.headers.get("content-length","")
+        if raw.isdecimal() and int(raw)>MAX_UPLOAD_BYTES+1048576:
+            return Response('{"detail":"Upload exceeds the 100 MB limit."}',
+                            status_code=413,media_type="application/json",
+                            headers={"Cache-Control":"no-store"})
     result=await call_next(request)
     result.headers["X-Content-Type-Options"]="nosniff"
     result.headers["X-Frame-Options"]="DENY"
     result.headers["Referrer-Policy"]="strict-origin-when-cross-origin"
     result.headers["Permissions-Policy"]="camera=(),microphone=(),geolocation=()"
     result.headers["Content-Security-Policy"]="frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
-    if request.url.scheme=="https":
+    if request.url.scheme=="https" or os.getenv("SITE_URL","").startswith("https://"):
         result.headers["Strict-Transport-Security"]="max-age=31536000"
     if request.url.path.startswith(("/api/","/admin")):
         result.headers["X-Robots-Tag"]="noindex, nofollow"
