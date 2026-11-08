@@ -7,6 +7,9 @@ on:
       - 'requirements.txt'
       - 'static/**'
   workflow_dispatch:
+concurrency:
+  group: clipconvert-production-live
+  cancel-in-progress: true
 jobs:
   live:
     runs-on: ubuntu-latest
@@ -23,11 +26,17 @@ jobs:
               headers={"User-Agent":"ClipConvertIntegrationTest/1.0"}
               if content_type: headers["Content-Type"]=content_type
               req=urllib.request.Request(base+path,data=payload,headers=headers)
-              try:
-                  with urllib.request.urlopen(req,timeout=60) as resp:
-                      return resp.status,resp.read(500000),dict(resp.headers)
-              except urllib.error.HTTPError as exc:
-                  return exc.code,exc.read(500000),dict(exc.headers)
+              for attempt in range(18):
+                  try:
+                      with urllib.request.urlopen(req,timeout=60) as resp:
+                          return resp.status,resp.read(500000),dict(resp.headers)
+                  except urllib.error.HTTPError as exc:
+                      status=exc.code
+                      body=exc.read(500000)
+                      if status==503 and payload is not None and attempt<17:
+                          time.sleep(3)
+                          continue
+                      return status,body,dict(exc.headers)
           def multipart(fields,filename,content):
               bound="ClipConvertTestBound3f09"
               segments=[]
@@ -40,7 +49,7 @@ jobs:
                   code,body,_=request("/api/health")
                   data=json.loads(body)
                   assert code==200 and data["status"]=="ok" and data["ffmpeg"],data
-                  if "best_quality_auto" not in data.get("features",[]):
+                  if "organized_folders" not in data.get("features",[]):
                       raise RuntimeError("New upload release is not live yet")
                   print("OK: deployed health and FFmpeg",data,flush=True)
                   break
@@ -73,7 +82,11 @@ jobs:
           code,body,headers=request(job["download_url"])
           assert code==200 and len(body)>4000,(code,len(body))
           assert "audio/mpeg" in headers["Content-Type"],headers["Content-Type"]
-          print("SUCCESS: upload to MP3 download works on Railway",flush=True)
+          assert job.get("folder_url"),job
+          zcode,zbody,zheaders=request(job["folder_url"])
+          assert zcode==200 and zbody.startswith(b"PK"),("Organized folder ZIP invalid",zcode,zbody[:50])
+          assert "application/zip" in zheaders["Content-Type"],zheaders["Content-Type"]
+          print("SUCCESS: upload to MP3 + organized folder ZIP works on Railway",flush=True)
           # Release gate: verify the exact requested YouTube link completes as
           # both video and audio, and that both formats can actually be downloaded.
           for fmt, quality, mime in (("mp4",0,"video/mp4"),("mp3",0,"audio/mpeg")):
@@ -99,6 +112,9 @@ jobs:
               assert mime in headers["Content-Type"],("Wrong media type",fmt,headers["Content-Type"])
               if fmt=="mp4":
                   assert b"ftyp" in body[:48],("Invalid MP4 signature",body[:48])
-              print("YOUTUBE_URL_RESULT: WORKING",fmt,"download bytes checked:",len(body),flush=True)
+              assert state.get("folder_url"),("Missing folder link",fmt,state)
+              zstatus,zdata,zheaders=request(state["folder_url"])
+              assert zstatus==200 and zdata[:2]==b"PK",("Broken folder download",fmt,zstatus,zdata[:80])
+              print("YOUTUBE_URL_RESULT: WORKING",fmt,"download bytes checked:",len(body),"ZIP OK",flush=True)
           print("ALL PRODUCTION CONVERSION CHECKS PASSED",flush=True)
           PY
