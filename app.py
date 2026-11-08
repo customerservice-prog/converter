@@ -1158,6 +1158,11 @@ def page(path:str):
     title,description=SEO_PAGES[path]
     canonical=SITE_URL+("/"+path if path else "/")
     doc=(ROOT/"static"/"index.html").read_text(encoding="utf-8")
+    # Hide the homepage in the first HTML response for secondary routes.
+    # Do this before sending HTML, not after DOMContentLoaded, to avoid flashes.
+    if path:
+        doc=doc.replace('data-route="home"','data-route="secondary"',1)
+        doc=doc.replace('<div id="homepage">','<div id="homepage" hidden>',1)
     # Server-rendered metadata for search engines that do not execute JS.
     doc=doc.replace('ClipConvert — YouTube to MP3 & MP4</title>',
                     html.escape(title)+"</title>",1)
@@ -1171,4 +1176,4 @@ def page(path:str):
                     'href="'+html.escape(canonical,quote=True)+'"',1)
     doc=doc.replace('property="og:url" content="https://clipconvert-web-production.up.railway.app/"',
                     'property="og:url" content="'+html.escape(canonical,quote=True)+'"',1)
-    return HTMLResponse(doc,headers={"Cache-Control":"public, max-age=180"})
+    return HTMLResponse(doc,headers={"Cache-Control":"no-cache, must-revalidate"})

@@ -45,10 +45,15 @@ class PremiumSiteTests(unittest.TestCase):
         result = client.get("/")
         self.assertEqual(result.status_code, 200)
         self.assertIn('class="premium-ui"', result.text)
-        self.assertIn("/assets/premium.css", result.text)
+        self.assertIn("/assets/site.css", result.text)
         self.assertIn("Your media. Your format.", result.text)
         self.assertIn("Made effortless.", result.text)
         self.assertIn("YOUR CONVERSION STUDIO", result.text)
+        self.assertIn('data-route="home"',result.text)
+        self.assertNotIn('href="/assets/style.css"',result.text)
+        self.assertNotIn('href="/assets/premium.css"',result.text)
+        self.assertIn('Cache-Control',result.headers)
+        self.assertIn("no-cache",result.headers["Cache-Control"])
 
     def test_all_core_converter_elements_still_exist(self):
         result = client.get("/")
@@ -58,10 +63,10 @@ class PremiumSiteTests(unittest.TestCase):
         self.assertFalse(set(REQUIRED_IDS) - ids, "Missing existing controls: " + str(REQUIRED_IDS - ids))
         self.assertEqual(len(parser.ids), len(ids), "Duplicate HTML ID found")
         self.assertTrue(any(x.get("rel") == "stylesheet" and
-                            x.get("href") == "/assets/premium.css" for x in parser.links))
+                            x.get("href","").startswith("/assets/site.css?v=") for x in parser.links))
 
     def test_layout_styles_include_accessibility_and_mobile(self):
-        result = client.get("/assets/premium.css")
+        result = client.get("/assets/site.css")
         self.assertEqual(result.status_code, 200)
         content = result.text
         for selector in (".source-tab", ".converter-card", ".steps", ".feature-strip",
@@ -79,13 +84,24 @@ class PremiumSiteTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, script)
 
+    def test_bundle_contains_original_and_premium_in_one_response(self):
+        result=client.get("/assets/site.css")
+        self.assertEqual(result.status_code,200)
+        self.assertIn("PREMIUM THEME OVERRIDES INCLUDED BEFORE FIRST PAINT",result.text)
+        self.assertIn(".converter-card",result.text)
+        self.assertIn("body.premium-ui .converter-card",result.text)
+        self.assertNotIn("@import",result.text)
+        self.assertIn('html[data-route="secondary"] #homepage',result.text)
+
     def test_secondary_pages_keep_same_shell(self):
         for path in ("/faq", "/add-on", "/bookmarklet", "/contact",
                      "/thumbnail", "/terms", "/copyright", "/privacy"):
             with self.subTest(path=path):
                 result = client.get(path)
                 self.assertEqual(result.status_code, 200)
-                self.assertIn("/assets/premium.css", result.text)
+                self.assertIn("/assets/site.css", result.text)
+                self.assertIn('data-route="secondary"',result.text)
+                self.assertIn('<div id="homepage" hidden>',result.text)
                 self.assertIn('id="secondaryPage"', result.text)
 
 
