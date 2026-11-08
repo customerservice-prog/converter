@@ -146,3 +146,8 @@ Batches share the normal 20-per-network-address rolling daily conversion quota. 
 
 ### Remaining external configuration
 A custom branded domain and official support email have not been chosen for this project. The Railway domain and private support inbox work now. Do not reuse another business's domain, contact details or credentials without an explicit decision. Railway persistent storage incurs storage charges in addition to computing and bandwidth.
+
+
+## Dedicated domain, email and legal-operator activation
+
+ClipConvert's actual domain and notification-provider setup are documented in [docs/CLIPCONVERT_LAUNCH_SETUP.md](docs/CLIPCONVERT_LAUNCH_SETUP.md). The web form and rights-reporting inbox are operational without email, but mail delivery remains disabled until a separate ClipConvert sender address, recipient inbox and SMTP credentials are configured. The contact mail retry worker reattempts unsent reports with backoff and the private dashboard shows whether outbound mail is configured; optional in-browser alerts are available while an authenticated operator keeps /admin open. Domain registration, DNS verification, legal operating identity and formal designated-agent details must not be inferred from unrelated businesses.

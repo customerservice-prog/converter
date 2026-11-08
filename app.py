@@ -978,8 +978,7 @@ def admin_overview(request:Request):
                 "disk_used_mb":round(disk.used/1024/1024),
                 "contact_messages":len(STORE.messages(200)),
                 "unread_contacts":sum(m.get("status","new")=="new" for m in STORE.messages(200)),
-                "email_notifications_configured":bool(os.getenv("CONTACT_EMAIL") and
-                    os.getenv("SMTP_HOST") and os.getenv("SMTP_FROM")),
+                "email_notifications_configured":mail_configured(),
                 "durable":True,"max_active":MAX_ACTIVE,"max_queued":MAX_QUEUE_JOBS}
 
 
@@ -993,7 +992,9 @@ CONTACT_DELIVERY_LOCK=threading.Lock()
 
 
 def mail_configured()->bool:
-    return all(os.getenv(k) for k in ("CONTACT_EMAIL","SMTP_HOST","SMTP_FROM"))
+    if not all(os.getenv(k) for k in ("CONTACT_EMAIL","SMTP_HOST","SMTP_FROM")):
+        return False
+    return not os.getenv("SMTP_USER") or bool(os.getenv("SMTP_PASSWORD"))
 
 
 def deliver_message(msg_id:str,record:dict)->bool:

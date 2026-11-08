@@ -80,6 +80,16 @@ class CopyrightSupportTests(unittest.TestCase):
         finally:
             module.STORE.drop("contact",msg_id)
 
+    def test_mail_requirements_do_not_claim_ready_without_smtp_key(self):
+        with patch.dict(os.environ,{"CONTACT_EMAIL":"support@example.org",
+                "SMTP_HOST":"smtp.resend.com","SMTP_FROM":"notifications@example.org",
+                "SMTP_USER":"resend","SMTP_PASSWORD":""}):
+            self.assertFalse(module.mail_configured())
+        with patch.dict(os.environ,{"CONTACT_EMAIL":"support@example.org",
+                "SMTP_HOST":"smtp.resend.com","SMTP_FROM":"notifications@example.org",
+                "SMTP_USER":"resend","SMTP_PASSWORD":"unit-test-secret"}):
+            self.assertTrue(module.mail_configured())
+
     def test_unsent_contact_is_retried_without_sending_twice(self):
         with tempfile.TemporaryDirectory() as root:
             fake=StateStore(Path(root)/"state.sqlite3")
