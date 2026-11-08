@@ -96,12 +96,15 @@ def convert(jid,vid,fmt,quality):
         opts={"js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
               "cachedir":False,"socket_timeout":20,"retries":2,"fragment_retries":2,
               "outtmpl":str(directory/"%(id)s.%(ext)s"),"restrictfilenames":True}
-        # A second supported YouTube client profile may work if the default
-        # client is challenged. Never attempt to bypass a login or DRM gate.
-        for clients in (None, ("tv", "web_safari")):
+        # Try a small, bounded selection of ordinary, public YouTube playback
+        # clients. These do not authorize content that requires a sign-in, and
+        # they cannot guarantee access from a datacenter IP address.
+        clients_to_try=(None, ("tv", "web_safari"), ("web_embedded",), ("android_vr",))
+        for index,clients in enumerate(clients_to_try):
             check_opts={**opts,"skip_download":True}
             if clients:
                 check_opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
+                change(jid,message="Checking available video formats…")
             try:
                 with yt_dlp.YoutubeDL(check_opts) as ydl:
                     info=ydl.extract_info(url,download=False)
@@ -109,9 +112,12 @@ def convert(jid,vid,fmt,quality):
                     opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
                 break
             except yt_dlp.utils.DownloadError as e:
-                challenge=("sign in to confirm" in str(e).lower() or "not a bot" in str(e).lower())
-                if clients is None and challenge:
-                    log.info("YouTube challenged the default profile for job %s; testing the alternate client",jid)
+                reason=str(e).lower()
+                challenge=any(term in reason for term in (
+                    "sign in to confirm", "not a bot", "not available on this app",
+                    "this video is unavailable", "video unavailable"))
+                if index+1<len(clients_to_try) and challenge:
+                    log.info("Public playback profile %d rejected video %s; trying next profile",index,vid)
                     continue
                 raise
         if not info or info.get("is_live") or info.get("live_status") in ("is_live","is_upcoming"):
