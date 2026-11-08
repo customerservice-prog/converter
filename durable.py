@@ -64,6 +64,15 @@ class StateStore:
             db.execute("DELETE FROM records WHERE kind=? AND id=?", (kind, str(key)))
             db.commit()
 
+    def prune(self, kind, older_than_seconds):
+        threshold=time.time()-float(older_than_seconds)
+        with self.lock, self._connection() as db:
+            result=db.execute("DELETE FROM records WHERE kind=? AND changed < ?",
+                              (kind,threshold))
+            db.commit()
+            return result.rowcount
+
+
     def messages(self, limit=100):
         with self.lock, self._connection() as db:
             rows = db.execute(
