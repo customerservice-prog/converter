@@ -1,0 +1,84 @@
+name: Live production smoke test
+on:
+  push:
+    paths:
+      - '.github/workflows/live-smoke.yml'
+  workflow_dispatch:
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check live site and permitted-media conversion
+        env:
+          SITE: https://clipconvert-web-production.up.railway.app
+        run: |
+          python - <<'PY'
+          import json, os, sys, time, urllib.request, urllib.error
+          base=os.environ["SITE"].rstrip("/")
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request(base+path,headers={"User-Agent":"ClipConvertSmoke/1.0"}),timeout=25) as r:
+                  return r.status,r.read(65536),dict(r.headers)
+          def post(data):
+              req=urllib.request.Request(base+"/api/jobs",data=json.dumps(data).encode(),
+                  headers={"Content-Type":"application/json","User-Agent":"ClipConvertSmoke/1.0"},method="POST")
+              try:
+                  with urllib.request.urlopen(req,timeout=30) as r:
+                      return r.status,json.load(r)
+              except urllib.error.HTTPError as e:
+                  return e.code,json.load(e)
+          for attempt in range(36):
+              try:
+                  status,body,headers=get("/api/health")
+                  details=json.loads(body)
+                  assert status==200 and details["status"]=="ok" and details["ffmpeg"] is True,details
+                  print("OK health",details,flush=True)
+                  break
+              except Exception as e:
+                  print("Not yet ready:",str(e)[:150],flush=True)
+                  if attempt==35: raise
+                  time.sleep(5)
+          for path,expected in [("/","ClipConvert"),("/faq","ClipConvert"),
+                               ("/assets/main.js","submitConversion"),
+                               ("/assets/style.css","converter-card")]:
+              status,body,headers=get(path)
+              assert status==200 and expected in body.decode(),(path,status)
+              print("OK public",path,status,flush=True)
+          invalid={"url":"https://youtu.be/aqz-KE-bpKQ","format":"mp3","quality":128}
+          status,data=post(invalid)
+          assert status==400,(status,data)
+          print("OK authorization required",flush=True)
+          invalid.update(rights_confirmed=True,url="http://127.0.0.1/private")
+          status,data=post(invalid)
+          assert status==400,(status,data)
+          print("OK rejected unauthorized hostname",flush=True)
+          # Big Buck Bunny is produced and CC BY 3.0 licensed by Blender Foundation.
+          # Blender Foundation: https://peach.blender.org/about/
+          url="https://www.youtube.com/watch?v=aqz-KE-bpKQ"
+          for format_,quality in (("mp3",128),("mp4",360)):
+              status,job=post({"url":url,"format":format_,"quality":quality,"rights_confirmed":True})
+              assert status==202,(format_,status,job)
+              jid=job["id"]
+              print("START",format_,jid,flush=True)
+              for attempt in range(180):
+                  status,body,headers=get("/api/jobs/"+jid)
+                  assert status==200,(format_,status)
+                  job=json.loads(body)
+                  if attempt%5==0 or job["state"] in ("ready","error"):
+                      print("PROGRESS",format_,job["state"],job["progress"],job.get("message"),
+                            (job.get("error") or "")[:200],flush=True)
+                  if job["state"]=="ready":
+                      with urllib.request.urlopen(base+job["download_url"],timeout=90) as resp:
+                          first=resp.read(16384)
+                          ct=resp.headers.get("Content-Type","")
+                          assert resp.status==200 and len(first)>1000,(format_,len(first),ct)
+                          assert ("audio/mpeg" in ct if format_=="mp3" else "video/mp4" in ct),(format_,ct)
+                      print("CONVERSION SUCCESS",format_, "bytes_sample=",len(first),flush=True)
+                      break
+                  if job["state"]=="error":
+                      raise RuntimeError(format_+" conversion failed: "+str(job.get("error")))
+                  time.sleep(2)
+              else:
+                  raise TimeoutError(format_+" did not complete in 6 minutes")
+          print("PRODUCTION SMOKE TEST ALL PASSED",flush=True)
+          PY
