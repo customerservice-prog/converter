@@ -506,6 +506,57 @@ def get_batch(bid:str):
         return public_batch(batch)
 
 
+@app.post("/api/jobs/{jid}/retry",status_code=202)
+def retry_job(jid:str):
+    with mutex:
+        j=jobs.get(jid)
+        if not j: raise HTTPException(404,"This conversion has expired.")
+        if j.get("batch_id"):
+            raise HTTPException(400,"Use Retry failed videos on the batch instead.")
+        if j["state"]!="error":
+            raise HTTPException(409,"Only failed jobs can be retried.")
+        if not j.get("video_id"):
+            raise HTTPException(400,"Upload an original media file again to retry.")
+        if int(j.get("retry_count",0))>=2:
+            raise HTTPException(429,"This video reached its retry limit.")
+        if sum(x["state"] in ("queued","working","receiving") for x in jobs.values())>=MAX_QUEUE_JOBS:
+            raise HTTPException(503,"The conversion queue is full.")
+        j.update(state="queued",progress=0,error=None,
+                 retry_count=int(j.get("retry_count",0))+1,
+                 message="Retry queued…",ended=None)
+        save_job(jid,True)
+    threading.Thread(target=run_queued_conversion,
+        args=(jid,j["video_id"],j["format"],j["quality"]),daemon=True).start()
+    return public(j)
+
+
+@app.post("/api/batches/{bid}/retry",status_code=202)
+def retry_batch(bid:str):
+    with mutex:
+        b=batches.get(bid)
+        if not b: raise HTTPException(404,"This batch has expired.")
+        if b["state"] not in ("failed","partial"):
+            raise HTTPException(409,"Only completed batches with failures can be retried.")
+        items=[jobs[jid] for jid in b["job_ids"] if jid in jobs and jobs[jid]["state"]=="error"
+               and int(jobs[jid].get("retry_count",0))<2]
+        if not items:
+            raise HTTPException(409,"No retryable failed videos remain.")
+        waiting=sum(j["state"] in ("queued","working","receiving") for j in jobs.values())
+        if waiting+len(items)>MAX_QUEUE_JOBS:
+            raise HTTPException(503,"The queue is full.")
+        for item in items:
+            item.update(state="queued",progress=0,error=None,ended=None,
+                        retry_count=int(item.get("retry_count",0))+1,
+                        message="Retry queued…")
+            save_job(item["id"],True)
+        b.update(state="working",message="Retrying failed videos…",ended=None)
+        STORE.put("batch",bid,b)
+        # A previous partial ZIP must not be reused once new items complete.
+        (MEDIA/("batch-"+bid)/"all-videos.zip").unlink(missing_ok=True)
+    threading.Thread(target=convert_batch,args=(bid,),daemon=True).start()
+    return public_batch(b)
+
+
 @app.get("/api/batches/{bid}/download")
 def download_batch(bid:str):
     cleanup()
@@ -806,30 +857,79 @@ def thumbnail(vid:str):
         return Response(data,media_type="image/jpeg",headers={"Content-Disposition":'attachment; filename="'+vid+'.jpg"'})
     except Exception as exc: raise HTTPException(502,"Could not retrieve the thumbnail.") from exc
 
+def require_admin(request:Request):
+    expected=os.getenv("ADMIN_TOKEN","")
+    received=request.headers.get("X-Admin-Token","")
+    if not expected:
+        raise HTTPException(503,"Admin access is not configured.")
+    if not received or not hmac.compare_digest(received,expected):
+        raise HTTPException(401,"Invalid admin token.")
+
+
+@app.get("/api/admin/contacts")
+def admin_contacts(request:Request):
+    require_admin(request)
+    return {"messages":STORE.messages(100)}
+
+
+@app.get("/api/admin/overview")
+def admin_overview(request:Request):
+    require_admin(request)
+    with mutex:
+        states={state:sum(j.get("state")==state for j in jobs.values())
+                for state in ("queued","working","ready","error","receiving")}
+        disk=shutil.disk_usage(MEDIA)
+        return {"jobs":states,"batches":len(batches),
+                "disk_free_mb":round(disk.free/1024/1024),
+                "disk_used_mb":round(disk.used/1024/1024),
+                "contact_messages":len(STORE.messages(200)),
+                "durable":True,"max_active":MAX_ACTIVE,"max_queued":MAX_QUEUE_JOBS}
+
+
 @app.post("/api/contact")
 def contact(payload:ContactRequest,request:Request):
-    recipient=os.getenv("CONTACT_EMAIL",""); smtp=os.getenv("SMTP_HOST","")
-    if not recipient or not smtp: raise HTTPException(503,"The contact form is not configured.")
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",payload.email):
         raise HTTPException(400,"Enter a valid email address.")
-    now=time.time(); ip=request.client.host if request.client else "unknown"
+    now=time.time()
+    ip=request.client.host if request.client else "unknown"
     with mutex:
         contact_quota[ip]=[x for x in contact_quota[ip] if now-x<86400]
-        if len(contact_quota[ip])>=3: raise HTTPException(429,"Too many messages.")
+        if len(contact_quota[ip])>=3:
+            raise HTTPException(429,"Too many messages. Please try again tomorrow.")
         contact_quota[ip].append(now)
-    email=EmailMessage(); email["Subject"]="Converter website contact"
-    email["To"]=recipient; email["From"]=os.getenv("SMTP_FROM",recipient)
-    email["Reply-To"]=payload.email
-    email.set_content("Name: "+payload.name+"\nEmail: "+payload.email+"\n\n"+payload.message)
-    try:
-        with smtplib.SMTP(smtp,int(os.getenv("SMTP_PORT","587")),timeout=12) as client:
-            client.starttls()
-            if os.getenv("SMTP_USER"): client.login(os.environ["SMTP_USER"],os.getenv("SMTP_PASSWORD",""))
-            client.send_message(email)
-    except Exception as exc:
-        log.warning("Contact form delivery failed")
-        raise HTTPException(502,"Message delivery failed.") from exc
-    return {"sent":True}
+        STORE.put("contact_quota",ip,contact_quota[ip])
+    msg_id=uuid.uuid4().hex
+    # Store the submission even if outgoing SMTP is unavailable.
+    # Avoid dumping message contents, email addresses or IPs in server logs.
+    STORE.put("contact",msg_id,{"name":payload.name,"email":payload.email,
+        "message":payload.message,"created":now,"emailed":False})
+    recipient=os.getenv("CONTACT_EMAIL","")
+    smtp=os.getenv("SMTP_HOST","")
+    if recipient and smtp:
+        email=EmailMessage()
+        email["Subject"]="ClipConvert contact "+msg_id[:8]
+        email["To"]=recipient
+        email["From"]=os.getenv("SMTP_FROM",recipient)
+        email["Reply-To"]=payload.email
+        email.set_content("Name: "+payload.name+"\nEmail: "+payload.email+"\n\n"+payload.message)
+        try:
+            with smtplib.SMTP(smtp,int(os.getenv("SMTP_PORT","587")),timeout=12) as client:
+                client.starttls()
+                if os.getenv("SMTP_USER"):
+                    client.login(os.environ["SMTP_USER"],os.getenv("SMTP_PASSWORD",""))
+                client.send_message(email)
+            STORE.put("contact",msg_id,{"name":payload.name,"email":payload.email,
+                "message":payload.message,"created":now,"emailed":True})
+        except Exception:
+            log.warning("Contact email failed; submission is retained in the private inbox")
+    return {"received":True,"reference":msg_id[:8],"message":"Your message has been saved."}
+
+
+@app.get("/admin",include_in_schema=False)
+def admin_page():
+    return FileResponse(ROOT/"static"/"admin.html")
+
+
 
 @app.get("/{path:path}",include_in_schema=False)
 def page(path:str):
