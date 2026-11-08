@@ -17,6 +17,10 @@ section h2{margin-top:32px}.messages{display:grid;gap:13px}.message{overflow-wra
 .analytics-row{display:grid;grid-template-columns:1.15fr repeat(3,1fr);gap:12px;padding:10px 13px;background:#10203b;border-radius:9px;font-size:12px}
 .analytics-row.head-row{color:#9cc4fb;font-weight:800;background:#223858}
 .analytics-row span:not(:first-child){text-align:right}
+.message .category{display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;background:#1c4d6f;color:#b9f2ff;margin-right:6px}
+.message .category.copyright{background:#553e76;color:#f2d5ff}
+.message .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.message .actions button{font-size:12px;padding:8px 12px}
 .status{font-size:13px;color:#8ee9d1}.error{color:#ffa9ba}
 @media(max-width:560px){.head{display:block}input{min-width:0;width:100%}form{display:block}button{margin-top:12px}}
 </style></head><body><main>
@@ -27,12 +31,13 @@ section h2{margin-top:32px}.messages{display:grid;gap:13px}.message{overflow-wra
 <p id="status" role="status" class="status"></p>
 <section id="dashboard" hidden><h2>System health</h2><div class="metrics" id="metrics"></div>
 <h2>Conversions by day <small>(UTC)</small></h2><div id="analytics" class="analytics"></div>
-<h2>Contact requests</h2><p>Submissions are stored here even when outgoing email is not configured. Keep the key private.</p>
+<h2>Support & rights inbox</h2><p>Reports are stored here even without SMTP. New requests are highlighted; review rights complaints promptly. Browser notifications work while this tab remains open.</p>
+<div class="actions"><button type="button" id="notify" hidden>Enable browser alerts</button></div>
 <div id="messages" class="messages"></div><button type="button" id="refresh">Refresh</button></section>
 </main><script>
 "use strict";
 const $=id=>document.getElementById(id);
-let key="";
+let key="",seenIds=new Set(),loadedOnce=false,hasNotify=false;
 function element(tag,text,className){const el=document.createElement(tag);if(text!==undefined)el.textContent=String(text);if(className)el.className=className;return el}
 async function load(){
   $("status").className="status";$("status").textContent="Loading…";
@@ -45,6 +50,7 @@ async function load(){
     const overview=await a.json(),contacts=await b.json(),analytics=await c.json();
     const metrics=[];
     for(const [label,val] of Object.entries(overview.jobs))metrics.push([label,val]);
+    metrics.push(["new requests",overview.unread_contacts],["email configured",overview.email_notifications_configured?"yes":"no"]);
     metrics.push(["free disk (MB)",overview.disk_free_mb],["active limit",overview.max_active],
                  ["queue limit",overview.max_queued],["messages",overview.contact_messages]);
     $("metrics").replaceChildren(...metrics.map(([name,value])=>{const card=element("div",undefined,"metric");card.append(element("strong",value),element("span",name));return card}));
@@ -60,12 +66,42 @@ async function load(){
     }
     if(rows.length===1)rows.push(element("p","No completed conversions in the last two weeks."));
     $("analytics").replaceChildren(...rows);
+    const newIds=(contacts.messages||[]).filter(item=>(item.status||"new")==="new").map(item=>item.id);
+    if(loadedOnce&&hasNotify&&typeof Notification!=="undefined"&&Notification.permission==="granted"){
+      const fresh=newIds.filter(id=>!seenIds.has(id));
+      if(fresh.length){
+        new Notification("ClipConvert: "+fresh.length+" new support request"+(fresh.length===1?"":"s"),
+          {body:"Open the private dashboard to review and respond."});
+      }
+    }
+    newIds.forEach(id=>seenIds.add(id));loadedOnce=true;
+    if(typeof Notification!=="undefined"&&Notification.permission!=="denied")$("notify").hidden=false;
     const messages=(contacts.messages||[]).map(item=>{
       const box=element("article",undefined,"message");
-      box.append(element("h3",item.name||"Visitor"),element("small",item.email||""));
+      const heading=element("h3",item.name||"Visitor");
+      const badge=element("span",(item.category==="copyright"?"Copyright report":"Support")+
+        " · "+(item.status||"new"),"category"+(item.category==="copyright"?" copyright":""));
+      box.append(heading,badge,element("small",item.email||""));
       box.append(element("p",item.message||""));
       box.append(element("small",new Date(item.created*1000).toLocaleString()+
         (item.emailed?" · Email sent":" · Saved in inbox")));
+      const actions=element("div",undefined,"actions");
+      if((item.status||"new")!=="closed"){
+        const reviewed=element("button",(item.status||"new")==="new"?"Mark reviewed":"Close request");
+        reviewed.type="button";
+        reviewed.addEventListener("click",async()=>{
+          reviewed.disabled=true;
+          try{
+            const status=(item.status||"new")==="new"?"reviewed":"closed";
+            const response=await fetch("/api/admin/contacts/"+encodeURIComponent(item.id),{
+              method:"PATCH",headers:{"X-Admin-Token":key,"Content-Type":"application/json"},
+              body:JSON.stringify({status})});
+            if(!response.ok)throw Error("Unable to update request");
+            await load();
+          }catch(error){$("status").textContent=error.message;reviewed.disabled=false;}
+        });
+        actions.append(reviewed);
+      }
       const remove=element("button","Delete message");
       remove.type="button";
       remove.addEventListener("click",async()=>{
@@ -78,7 +114,8 @@ async function load(){
           await load();
         }catch(err){$("status").className="error";$("status").textContent=err.message;remove.disabled=false;}
       });
-      box.append(remove);
+      actions.append(remove);
+      box.append(actions);
       return box;
     });
     $("messages").replaceChildren(...(messages.length?messages:[element("p","No contact requests yet.")]));
@@ -90,4 +127,11 @@ $("auth").addEventListener("submit",event=>{
   event.preventDefault();key=$("token").value.trim();$("token").value="";if(key)load();
 });
 $("refresh").addEventListener("click",load);
+$("notify").addEventListener("click",async()=>{
+  if(typeof Notification==="undefined")return;
+  const result=await Notification.requestPermission();
+  hasNotify=result==="granted";
+  $("notify").textContent=hasNotify?"Browser alerts enabled":"Enable browser alerts";
+});
+setInterval(()=>{if(key&&!document.hidden)load();},30000);
 </script></body></html>
