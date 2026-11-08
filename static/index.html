@@ -3,17 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#080d1e">
+  <meta name="theme-color" content="#060c1d">
   <meta name="description" content="Convert permitted YouTube videos to MP3 or MP4. Fast, simple, no account needed.">
   <meta property="og:title" content="ClipConvert — Simple MP3 & MP4 conversion">
   <meta property="og:description" content="Paste a YouTube link, choose a format, and download.">
   <title>ClipConvert — YouTube to MP3 & MP4</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/style.css">
+  <link rel="stylesheet" href="/assets/premium.css">
   <script defer src="/assets/main.js"></script>
 </head>
-<body>
-  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+<body class="premium-ui">
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="ambient ambient-c" aria-hidden="true"></div>
   <div class="shell">
     <header class="site-header">
       <a class="brand" href="/" aria-label="ClipConvert home">
@@ -29,11 +30,11 @@
     <main>
       <div id="homepage">
         <section class="hero" id="converter">
-          <div class="eyebrow"><span class="pulse"></span> FREE ONLINE MEDIA CONVERTER <span class="eyebrow-line"></span> NO SIGN-UP NEEDED</div>
-          <h1>Your favorite media.<br><span class="gradient-text">Your format.</span> Your way.</h1>
-          <p class="hero-description">Turn YouTube videos into crisp MP3 audio or MP4 video in a few clicks. Simple enough for anyone, powerful enough for everyone.</p>
+          <div class="eyebrow"><span class="eyebrow-play" aria-hidden="true">▶</span><span>FREE ONLINE MEDIA CONVERTER</span><span class="eyebrow-line"></span><span class="eyebrow-bolt" aria-hidden="true">ϟ</span><span>NO SIGN-UP NEEDED</span></div>
+          <h1>Your media. Your format.<br><span class="gradient-text">Made effortless.</span></h1>
+          <p class="hero-description">Your videos, the way you want them. Convert authorized media to high-quality MP3 or MP4 in a simple, beautifully fast workflow.</p>
           <div class="converter-card">
-            <div class="card-heading"><div><div class="card-kicker">START HERE</div><h2>Convert a video</h2></div><div class="card-heading-tag"><span class="status-dot"></span> Online tool</div></div>
+            <div class="card-heading"><div><div class="card-kicker">YOUR CONVERSION STUDIO</div><h2>Convert a YouTube video</h2></div><div class="card-trust"><span class="trust-chip"><span aria-hidden="true">ϟ</span> Fast</span><span class="trust-chip"><span aria-hidden="true">✧</span> Best quality</span><span class="trust-chip"><span aria-hidden="true">◇</span> HTTPS</span></div></div>
             <form id="convertForm" novalidate>
               <div class="source-tabs" role="group" aria-label="Choose source">
                 <button id="youtubeSourceButton" type="button" class="source-tab active" aria-pressed="true">↗ Single link</button>
@@ -97,21 +98,37 @@
               <button id="resetButton" type="button" class="start-over">↶ Convert another video</button>
             </div>
           </div>
-          <div class="hero-caption"><span class="small-star">✳</span> You bring the link. We handle the format.</div>
+          <div class="hero-caption"><span class="small-star" aria-hidden="true">▶</span> You bring the link. We handle the format.</div>
         </section>
         <section class="feature-strip" aria-label="Highlights">
-          <div><span class="strip-symbol">✦</span><div><strong>Quality options</strong><small>MP3 audio & MP4 video</small></div></div>
-          <div><span class="strip-symbol">↗</span><div><strong>One simple workflow</strong><small>Paste, convert, download</small></div></div>
-          <div><span class="strip-symbol">◈</span><div><strong>Works everywhere</strong><small>Desktop, phone or tablet</small></div></div>
+          <div class="feature-item"><span class="strip-symbol" aria-hidden="true">✧</span><div><strong>Quality on your terms</strong><small>Best available MP3 &amp; MP4</small></div></div>
+          <div class="feature-item"><span class="strip-symbol" aria-hidden="true">ϟ</span><div><strong>One simple workflow</strong><small>Paste, convert, download</small></div></div>
+          <div class="feature-item"><span class="strip-symbol" aria-hidden="true">▱</span><div><strong>Made for any screen</strong><small>Desktop, phone or tablet</small></div></div>
         </section>
-        <section class="how" id="how"><div class="section-head"><span class="overline">SUPER SIMPLE</span><h2>Three steps. That's it.</h2><p>No installation. No learning curve. Get started in seconds.</p></div><div class="steps"><article><span class="step-number">01 <span>↗</span></span><div class="step-icon">↗</div><h3>Paste the link</h3><p>Find a YouTube video you have permission to download and copy its URL.</p></article><article><span class="step-number">02 <span>↗</span></span><div class="step-icon">♫</div><h3>Choose your format</h3><p>Select MP3 for audio or MP4 for video, and pick your preferred quality.</p></article><article><span class="step-number">03 <span>✓</span></span><div class="step-icon">↓</div><h3>Get your file</h3><p>Once processing finishes, download the result directly to your device.</p></article></div></section>
-        <section class="bottom-cta"><div><span class="overline">READY WHEN YOU ARE</span><h2>Make it yours.</h2><p>No clutter. Just a straightforward way to convert authorized media.</p></div><a href="#converter">Convert a video <span>↗</span></a></section>
+        <section class="how" id="how"><div class="section-head"><span class="overline">EFFORTLESS FROM START TO FINISH</span><h2>Three steps. <span>That's it.</span></h2><p>No installation. No learning curve. Just the format you want.</p></div>
+          <div class="steps">
+            <article class="step-one"><span class="step-number">01 <span>↗</span></span><div class="step-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="m20 28 8-8M15 19l-4 4a8 8 0 0 0 11 11l5-5M33 29l4-4a8 8 0 0 0-11-11l-5 5" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><h3>Paste the link</h3><p>Copy a YouTube video or Short you're authorized to download and paste its URL.</p></article>
+            <article class="step-two"><span class="step-number">02 <span>↗</span></span><div class="step-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M29 11v24M29 11l10-2v20M29 16l10-2" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/><ellipse cx="24" cy="35" rx="7" ry="5" fill="currentColor"/><ellipse cx="34" cy="29" rx="5" ry="4" fill="currentColor"/></svg></div><h3>Pick your format</h3><p>Choose MP3 or MP4. Best available quality is already selected for you.</p></article>
+            <article class="step-three"><span class="step-number">03 <span>✓</span></span><div class="step-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M24 7v23m0 0 9-9m-9 9-9-9M9 35v5h30v-5" stroke="currentColor" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div><h3>Get your file</h3><p>Download the result directly, or save an organized folder ZIP in one click.</p></article>
+          </div>
+        </section>
+        <section class="bottom-cta"><div class="cta-copy"><span class="overline">READY WHEN YOU ARE</span><h2>Your next download<br>starts here.</h2><p>Bring the link. Pick your format. Keep the quality.</p></div><div class="cta-art" aria-hidden="true"><span class="cta-media-card"><span>▶</span></span><span class="cta-music-card">♫</span></div><a href="#converter">Convert a video <span>↗</span></a></section>
       </div>
       <div id="secondaryPage" class="secondary-page" hidden>
         <a class="back-link" href="/">← Back to converter</a><div class="secondary-heading"><span id="secondaryEyebrow" class="overline">CLIPCONVERT</span><h1 id="secondaryTitle"></h1><p id="secondarySubtitle"></p></div><div class="secondary-content" id="secondaryContent"></div>
       </div>
     </main>
-    <footer class="footer"><div class="footer-top"><a class="brand footer-brand" href="/"><span class="brand-icon">↗</span><span>clip<span class="brand-highlight">convert</span><span class="brand-period">.</span></span></a><span>Less friction. More freedom.</span></div><div class="footer-links"><div><a href="/">Converter</a><a href="/faq">FAQ</a><a href="/thumbnail">Thumbnail downloader</a><a href="/add-on">Browser extension</a><a href="/bookmarklet">Bookmarklets</a></div><div><a href="/contact">Contact</a><a href="/copyright">Copyright</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></div></div><div class="footer-bottom"><span>© <span id="copyrightYear"></span> ClipConvert. Independently built. Not affiliated with YouTube.</span><span>Use only media you own or are authorized to download.</span></div></footer>
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-intro"><a class="brand footer-brand" href="/"><span class="brand-icon" aria-hidden="true">↗</span><span>clip<span class="brand-highlight">convert</span><span class="brand-period">.</span></span></a><p>Great quality. Less hassle.<br>Your media, your way.</p></div>
+        <div class="footer-links">
+          <div class="footer-group"><strong>Product</strong><a href="/">Converter</a><a href="/add-on">Extension</a><a href="/bookmarklet">Bookmarklets</a></div>
+          <div class="footer-group"><strong>Resources</strong><a href="/faq">FAQ</a><a href="/thumbnail">Thumbnail downloader</a><a href="/contact">Contact</a></div>
+          <div class="footer-group"><strong>Legal</strong><a href="/copyright">Copyright</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></div>
+        </div>
+      </div>
+      <div class="footer-bottom"><span>© <span id="copyrightYear"></span> ClipConvert. Independently built. Not affiliated with YouTube.</span><span>Use only media you own or are authorized to download.</span></div>
+    </footer>
   </div>
 </body>
 </html>
