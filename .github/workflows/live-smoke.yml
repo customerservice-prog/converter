@@ -26,17 +26,28 @@ jobs:
               headers={"User-Agent":"ClipConvertIntegrationTest/1.0"}
               if content_type: headers["Content-Type"]=content_type
               req=urllib.request.Request(base+path,data=payload,headers=headers)
-              for attempt in range(18):
+              for attempt in range(35):
                   try:
                       with urllib.request.urlopen(req,timeout=60) as resp:
                           return resp.status,resp.read(500000),dict(resp.headers)
                   except urllib.error.HTTPError as exc:
                       status=exc.code
                       body=exc.read(500000)
-                      if status==503 and payload is not None and attempt<17:
+                      # Railway's single mounted-volume service can briefly
+                      # return 502 while the new instance takes over.
+                      # Retry idempotent GETs; retry POSTs only when capacity
+                      # explicitly rejected them with 503.
+                      temporary=(payload is None and status in (502,503,504)) or (
+                          payload is not None and status==503)
+                      if temporary and attempt<34:
                           time.sleep(3)
                           continue
                       return status,body,dict(exc.headers)
+                  except urllib.error.URLError:
+                      if payload is None and attempt<34:
+                          time.sleep(3)
+                          continue
+                      raise
           def multipart(fields,filename,content):
               bound="ClipConvertTestBound3f09"
               segments=[]
