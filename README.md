@@ -115,3 +115,18 @@ Select **Multiple links** on the converter homepage. Paste **2–10 distinct You
 Batches share the normal 20-per-network-address rolling daily conversion quota. Conversion output stays temporarily on the server (default one hour after the batch finishes), and the batch ZIP is built only when requested with ZIP_STORED—no extra media recompression.
 
 **Limits:** this is currently a single Railway instance with in-memory jobs and temporary local files. A server restart or deployment during active conversions clears those jobs; for durable long-running batches, add a persistent queue and shared object storage. A website cannot directly create folders on the user's desktop; the downloaded ZIP contains the folders when extracted. This is not YouTube playlist downloading.
+
+
+## November 8, 2026 — MP4 audio compatibility fix
+
+**Problem:** Some MP4 files downloaded with best-available video resolution could appear silent in certain players, because a successful video-only download and MP4 file header check did not guarantee a compatible audio track.
+
+**Fix:**
+- The MP4 yt-dlp selector is now \`bestvideo+bestaudio/best\` so it explicitly chooses separate video and audio streams when available.
+- The server inspects the completed MP4 with ffprobe. Files missing an audio track will fail with an explicit error rather than silently downloading.
+- Incompatible audio codecs such as Opus are converted to **AAC stereo at 256 kbps**, while the video stream is copied **without video re-encoding**. Existing compatible AAC mono/stereo audio is left untouched to keep conversion fast.
+- FFmpeg decodes a portion of the output audio to catch corrupted audio tracks before the Download button appears.
+- Conversion results expose \`audio_codec\` and \`audio_channels\`, and show **AAC audio verified** in the interface.
+- The test suite synthesizes an MP4 with Opus audio, repairs it, verifies the video stream is unchanged, decodes non-silent audio samples, and tests that AAC inputs are not re-encoded. The live production workflow checks that MP4 downloads actually report a verified AAC track.
+
+**Limitations:** Audio cannot be created from a source that has no audio track. A media player's hardware codec support for 4K video is a separate issue from the audio stream. Files downloaded before this change must be converted again; the server cannot retroactively modify an existing download.

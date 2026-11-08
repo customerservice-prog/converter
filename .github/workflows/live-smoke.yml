@@ -49,7 +49,7 @@ jobs:
                   code,body,_=request("/api/health")
                   data=json.loads(body)
                   assert code==200 and data["status"]=="ok" and data["ffmpeg"],data
-                  if "batch_links" not in data.get("features",[]):
+                  if "aac_mp4_audio" not in data.get("features",[]):
                       raise RuntimeError("New upload release is not live yet")
                   print("OK: deployed health and FFmpeg",data,flush=True)
                   break
@@ -106,6 +106,10 @@ jobs:
               assert state["state"]=="ready",("YouTube extraction or conversion failed",fmt,state)
               assert state["quality"]==0,("Expected automatic quality",fmt,state)
               assert state.get("actual_quality"),("No actual output quality reported",fmt,state)
+              if fmt=="mp4":
+                  assert state.get("audio_codec")=="aac",("MP4 does not have AAC audio",state)
+                  assert int(state.get("audio_channels") or 0)>=1,("No decodable audio channels",state)
+                  print("MP4_AUDIO_RESULT: AAC VERIFIED",state["audio_channels"],"channels",flush=True)
               print("BEST QUALITY SELECTED:",fmt,state["actual_quality"],flush=True)
               code,body,headers=request(state["download_url"])
               assert code==200 and len(body)>10000,("Download unavailable",fmt,code,len(body))
