@@ -21,14 +21,26 @@ jobs:
           SITE: https://clipconvert-web-production.up.railway.app
         run: |
           python - <<'PY'
-          import json,os,urllib.request
+          import json,os,time,urllib.request,urllib.error
           root=os.environ["SITE"].rstrip("/")
           for route in ("/","/api/health","/assets/main.js","/assets/premium.css",
                         "/robots.txt","/sitemap.xml"):
               request=urllib.request.Request(root+route,headers={"User-Agent":"ClipConvertUptime/1.0"})
-              with urllib.request.urlopen(request,timeout=25) as response:
-                  body=response.read(150000)
-                  assert response.status==200,(route,response.status)
+              for attempt in range(18):
+                  try:
+                      with urllib.request.urlopen(request,timeout=25) as response:
+                          body=response.read(150000)
+                          assert response.status==200,(route,response.status)
+                      break
+                  except urllib.error.HTTPError as error:
+                      if error.code in (502,503,504) and attempt<17:
+                          print("Transient Railway update",error.code,route,flush=True)
+                          time.sleep(5)
+                          continue
+                      raise
+                  except urllib.error.URLError:
+                      if attempt==17:raise
+                      time.sleep(5)
                   if route=="/":
                       assert b"ClipConvert" in body and b"historySection" in body
                   if route=="/api/health":
