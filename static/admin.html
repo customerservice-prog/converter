@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClipConvert · Private operator dashboard</title><meta name="robots" content="noindex,nofollow">
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#061022;color:#edf5ff;font:15px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1020px;padding:38px 20px 80px;margin:auto}h1{font-size:32px;letter-spacing:-1px;margin:0}
+p{color:#adbed9}.head{display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid #31415c;padding-bottom:24px;margin-bottom:24px}
+a{color:#90ddef}form{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:22px 0}
+label{font-size:13px;color:#bdd3f2}input{display:block;margin-top:5px;padding:13px;border:1px solid #52699b;border-radius:10px;background:#132743;color:white;min-width:270px}
+button{border:1px solid #a3d1ff;border-radius:10px;background:#416bcb;padding:12px 18px;color:white;font-weight:700;cursor:pointer}
+button:hover{background:#477be5}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px;margin:25px 0}
+.metric,.message{padding:19px;background:linear-gradient(135deg,#132746,#0c1b36);border:1px solid #314c78;border-radius:14px}
+.metric strong{display:block;font-size:27px;color:#97d5ff}.metric span{color:#afc3df;font-size:12px}
+section h2{margin-top:32px}.messages{display:grid;gap:13px}.message{overflow-wrap:anywhere}
+.message h3{margin:0 0 4px;font-size:16px}.message p{white-space:pre-wrap;color:#d2dff0;margin:11px 0 0}
+.message small{color:#9eafce}.status{font-size:13px;color:#8ee9d1}.error{color:#ffa9ba}
+@media(max-width:560px){.head{display:block}input{min-width:0;width:100%}form{display:block}button{margin-top:12px}}
+</style></head><body><main>
+<div class="head"><div><h1>ClipConvert control center</h1><p>Private contact inbox and conversion health · not indexed</p></div><a href="/">Back to converter</a></div>
+<form id="auth"><label for="token">Operator access key
+<input id="token" type="password" autocomplete="off" placeholder="Enter private admin key" required></label>
+<button type="submit">Open dashboard</button></form>
+<p id="status" role="status" class="status"></p>
+<section id="dashboard" hidden><h2>System health</h2><div class="metrics" id="metrics"></div>
+<h2>Contact requests</h2><p>Submissions are stored here even when outgoing email is not configured. Keep the key private.</p>
+<div id="messages" class="messages"></div><button type="button" id="refresh">Refresh</button></section>
+</main><script>
+"use strict";
+const $=id=>document.getElementById(id);
+let key="";
+function element(tag,text,className){const el=document.createElement(tag);if(text!==undefined)el.textContent=String(text);if(className)el.className=className;return el}
+async function load(){
+  $("status").className="status";$("status").textContent="Loading…";
+  try{
+    const headers={"X-Admin-Token":key};
+    const [a,b]=await Promise.all([fetch("/api/admin/overview",{headers,cache:"no-store"}),
+       fetch("/api/admin/contacts",{headers,cache:"no-store"})]);
+    if(!a.ok||!b.ok)throw Error(a.status===401?"Access key not accepted":"Unable to load private dashboard");
+    const overview=await a.json(),contacts=await b.json();
+    const metrics=[];
+    for(const [label,val] of Object.entries(overview.jobs))metrics.push([label,val]);
+    metrics.push(["free disk (MB)",overview.disk_free_mb],["active limit",overview.max_active],
+                 ["queue limit",overview.max_queued],["messages",overview.contact_messages]);
+    $("metrics").replaceChildren(...metrics.map(([name,value])=>{const card=element("div",undefined,"metric");card.append(element("strong",value),element("span",name));return card}));
+    const messages=(contacts.messages||[]).map(item=>{
+      const box=element("article",undefined,"message");
+      box.append(element("h3",item.name||"Visitor"),element("small",item.email||""));
+      box.append(element("p",item.message||""));
+      box.append(element("small",new Date(item.created*1000).toLocaleString()+
+        (item.emailed?" · Email sent":" · Saved in inbox")));
+      return box;
+    });
+    $("messages").replaceChildren(...messages.length?messages:[element("p","No contact requests yet.")]);
+    $("dashboard").hidden=false;
+    $("status").textContent="Dashboard loaded securely.";
+  }catch(error){$("status").className="error";$("status").textContent=error.message;$("dashboard").hidden=true}
+}
+$("auth").addEventListener("submit",event=>{
+  event.preventDefault();key=$("token").value.trim();$("token").value="";if(key)load();
+});
+$("refresh").addEventListener("click",load);
+</script></body></html>
