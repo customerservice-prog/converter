@@ -562,3 +562,7 @@ body.premium-ui .rights-confirm{display:flex;align-items:flex-start;gap:12px;lin
 body.premium-ui .rights-confirm input[type="checkbox"]{width:17px;min-width:17px;height:17px;margin:2px 0 0;accent-color:#7ce5f0}
 body.premium-ui .simple-form button:disabled{opacity:.55;cursor:wait}
 #copyrightResult{font-size:13px;color:#9eead6}
+
+/* Prevent decorative background glows from widening the document at first paint. */
+html{overflow-x:hidden}
+@supports (overflow:clip){html{overflow-x:clip}}

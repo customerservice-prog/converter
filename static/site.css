@@ -624,3 +624,7 @@ body.premium-ui .simple-form button:disabled{opacity:.55;cursor:wait}
 
 /* Server sets data-route on <html> for initial rendering before JS. */
 html[data-route="secondary"] #homepage{display:none!important}
+
+/* Prevent decorative background glows from widening the document at first paint. */
+html{overflow-x:hidden}
+@supports (overflow:clip){html{overflow-x:clip}}

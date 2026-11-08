@@ -26,6 +26,12 @@ try {
         viewport:window.innerWidth,
         bodyBackground:getComputedStyle(document.body).backgroundImage,
         horizontalOverflow:document.documentElement.scrollWidth>window.innerWidth+2,
+        documentWidth:document.documentElement.scrollWidth,
+        offscreenElements:[...document.querySelectorAll('body *')].filter(el=>{
+          const box=el.getBoundingClientRect();
+          return box.width>0 && (box.right>window.innerWidth+2 || box.left< -2)
+            && getComputedStyle(el).position!=='absolute';
+        }).slice(0,8).map(el=>({tag:el.tagName,className:el.className,rect:el.getBoundingClientRect().toJSON()})),
         firstPaint:performance.getEntriesByType('paint').map(x=>[x.name,Math.round(x.startTime)])
       };
     });
