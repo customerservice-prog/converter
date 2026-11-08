@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certi
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py .
+COPY app.py durable.py ./
 COPY static ./static
 RUN mkdir -p /tmp/converter-media && chown -R nobody:nogroup /app /tmp/converter-media
 USER nobody
