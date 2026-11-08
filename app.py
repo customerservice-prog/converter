@@ -115,6 +115,11 @@ def change(jid,**kwargs):
         if jid in jobs:
             previous=jobs[jid].get("state")
             jobs[jid].update(kwargs)
+            current=jobs[jid].get("state")
+            if current in ("ready","error") and current!=previous:
+                category="converted" if current=="ready" else "failed"
+                STORE.increment(category)
+                STORE.increment(jobs[jid].get("format","unknown")+"_"+category)
             save_job(jid,force=("state" in kwargs and kwargs["state"]!=previous)
                      or kwargs.get("state") in ("ready","error"))
 
@@ -413,7 +418,9 @@ async def headers(request:Request,call_next):
 @app.get("/api/health")
 def health():
     return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),
-            "storage_ready":STORE.path.is_file(),"yt_dlp":yt_dlp.version.__version__,
+            "storage_ready":STORE.path.is_file(),
+            "storage_free_mb":round(shutil.disk_usage(MEDIA).free/1024/1024),
+            "yt_dlp":yt_dlp.version.__version__,
             "features":["upload","youtube","thumbnail","best_quality_auto",
                         "organized_folders","parallel_fragments","batch_links",
                         "aac_mp4_audio","durable_jobs","contact_inbox","retry"]}
@@ -918,6 +925,12 @@ def admin_overview(request:Request):
                 "disk_used_mb":round(disk.used/1024/1024),
                 "contact_messages":len(STORE.messages(200)),
                 "durable":True,"max_active":MAX_ACTIVE,"max_queued":MAX_QUEUE_JOBS}
+
+
+@app.get("/api/admin/analytics")
+def admin_analytics(request:Request):
+    require_admin(request)
+    return {"timezone":"UTC","daily":STORE.daily_summary(14)}
 
 
 @app.post("/api/contact")
