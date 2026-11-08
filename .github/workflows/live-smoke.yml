@@ -40,7 +40,7 @@ jobs:
                   code,body,_=request("/api/health")
                   data=json.loads(body)
                   assert code==200 and data["status"]=="ok" and data["ffmpeg"],data
-                  if "upload" not in data.get("features",[]):
+                  if "best_quality_auto" not in data.get("features",[]):
                       raise RuntimeError("New upload release is not live yet")
                   print("OK: deployed health and FFmpeg",data,flush=True)
                   break

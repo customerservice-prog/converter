@@ -15,8 +15,8 @@ def tone():
     with wave.open(buf,"wb") as f:
         f.setnchannels(1)
         f.setsampwidth(2)
-        f.setframerate(16000)
-        samples=b"".join(struct.pack("<h",int(5000*math.sin(2*math.pi*440*i/16000))) for i in range(16000))
+        f.setframerate(44100)
+        samples=b"".join(struct.pack("<h",int(5000*math.sin(2*math.pi*440*i/44100))) for i in range(44100))
         f.writeframes(samples)
     return buf.getvalue()
 
