@@ -13,7 +13,11 @@ button:hover{background:#477be5}.metrics{display:grid;grid-template-columns:repe
 .metric strong{display:block;font-size:27px;color:#97d5ff}.metric span{color:#afc3df;font-size:12px}
 section h2{margin-top:32px}.messages{display:grid;gap:13px}.message{overflow-wrap:anywhere}
 .message h3{margin:0 0 4px;font-size:16px}.message p{white-space:pre-wrap;color:#d2dff0;margin:11px 0 0}
-.message small{color:#9eafce}.status{font-size:13px;color:#8ee9d1}.error{color:#ffa9ba}
+.message small{color:#9eafce}.analytics{display:grid;gap:8px;margin:15px 0 26px}
+.analytics-row{display:grid;grid-template-columns:1.15fr repeat(3,1fr);gap:12px;padding:10px 13px;background:#10203b;border-radius:9px;font-size:12px}
+.analytics-row.head-row{color:#9cc4fb;font-weight:800;background:#223858}
+.analytics-row span:not(:first-child){text-align:right}
+.status{font-size:13px;color:#8ee9d1}.error{color:#ffa9ba}
 @media(max-width:560px){.head{display:block}input{min-width:0;width:100%}form{display:block}button{margin-top:12px}}
 </style></head><body><main>
 <div class="head"><div><h1>ClipConvert control center</h1><p>Private contact inbox and conversion health · not indexed</p></div><a href="/">Back to converter</a></div>
@@ -22,6 +26,7 @@ section h2{margin-top:32px}.messages{display:grid;gap:13px}.message{overflow-wra
 <button type="submit">Open dashboard</button></form>
 <p id="status" role="status" class="status"></p>
 <section id="dashboard" hidden><h2>System health</h2><div class="metrics" id="metrics"></div>
+<h2>Conversions by day <small>(UTC)</small></h2><div id="analytics" class="analytics"></div>
 <h2>Contact requests</h2><p>Submissions are stored here even when outgoing email is not configured. Keep the key private.</p>
 <div id="messages" class="messages"></div><button type="button" id="refresh">Refresh</button></section>
 </main><script>
@@ -33,15 +38,28 @@ async function load(){
   $("status").className="status";$("status").textContent="Loading…";
   try{
     const headers={"X-Admin-Token":key};
-    const [a,b]=await Promise.all([fetch("/api/admin/overview",{headers,cache:"no-store"}),
-       fetch("/api/admin/contacts",{headers,cache:"no-store"})]);
-    if(!a.ok||!b.ok)throw Error(a.status===401?"Access key not accepted":"Unable to load private dashboard");
-    const overview=await a.json(),contacts=await b.json();
+    const [a,b,c]=await Promise.all([fetch("/api/admin/overview",{headers,cache:"no-store"}),
+       fetch("/api/admin/contacts",{headers,cache:"no-store"}),
+       fetch("/api/admin/analytics",{headers,cache:"no-store"})]);
+    if(!a.ok||!b.ok||!c.ok)throw Error(a.status===401?"Access key not accepted":"Unable to load private dashboard");
+    const overview=await a.json(),contacts=await b.json(),analytics=await c.json();
     const metrics=[];
     for(const [label,val] of Object.entries(overview.jobs))metrics.push([label,val]);
     metrics.push(["free disk (MB)",overview.disk_free_mb],["active limit",overview.max_active],
                  ["queue limit",overview.max_queued],["messages",overview.contact_messages]);
     $("metrics").replaceChildren(...metrics.map(([name,value])=>{const card=element("div",undefined,"metric");card.append(element("strong",value),element("span",name));return card}));
+    const header=element("div",undefined,"analytics-row head-row");
+    for(const label of ["Day","Successful","Failed","MP4 success"])header.append(element("span",label));
+    const rows=[header];
+    for(const [day,counters] of Object.entries(analytics.daily||{}).sort((a,b)=>b[0].localeCompare(a[0]))){
+      const row=element("div",undefined,"analytics-row");
+      for(const value of [day,counters.converted||0,counters.failed||0,counters.mp4_converted||0]){
+        row.append(element("span",value));
+      }
+      rows.push(row);
+    }
+    if(rows.length===1)rows.push(element("p","No completed conversions in the last two weeks."));
+    $("analytics").replaceChildren(...rows);
     const messages=(contacts.messages||[]).map(item=>{
       const box=element("article",undefined,"message");
       box.append(element("h3",item.name||"Visitor"),element("small",item.email||""));
@@ -50,7 +68,7 @@ async function load(){
         (item.emailed?" · Email sent":" · Saved in inbox")));
       return box;
     });
-    $("messages").replaceChildren(...messages.length?messages:[element("p","No contact requests yet.")]);
+    $("messages").replaceChildren(...(messages.length?messages:[element("p","No contact requests yet.")]));
     $("dashboard").hidden=false;
     $("status").textContent="Dashboard loaded securely.";
   }catch(error){$("status").className="error";$("status").textContent=error.message;$("dashboard").hidden=true}
