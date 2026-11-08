@@ -84,10 +84,21 @@ Load the /extension directory as an unpacked developer extension in Chrome/Edge/
 Unit tests cover URL allowlisting and supported formats; GitHub Actions runs them on push. Check /api/health to verify FFmpeg is on the server, and check the actual browser conversion journey after deployment. Avoid claiming real YouTube conversion is verified until tested on the deployed server.
 
 
-## November 2026 reliability update
+## November 8, 2026: verified Railway YouTube-link fix
 
-Railway's container runs and serves the interface correctly. YouTube sometimes responds to Railway's shared datacenter egress IP with a **"Sign in to confirm you're not a bot"** challenge before any media can be retrieved. The downloader now tries one alternate supported yt-dlp player client profile, but this does not guarantee YouTube permits the download. The server does not solicit users' account cookies or pretend all YouTube links work.
+**Live URL:** https://clipconvert-web-production.up.railway.app
 
-**Practical fallback:** Choose **Upload file** on the converter page, select an authorized video/audio file (up to 100MB), choose MP3 or MP4 and convert it with the server's local FFmpeg. Temporary upload files are deleted after processing and downloads expire after the configured TTL. Uploads are rate-limited and inspected with ffprobe before conversion. MAX_UPLOAD_MB defaults to 100 and may be configured on the Railway service. The file-based path is tested separately from the YouTube extractor.
+The initial version failed for YouTube video `NY6acnscmwo` because YouTube issued a bot-verification challenge to the Railway datacenter's IPv4 egress. The production service now successfully retrieves and converts this same link when configured for outbound IPv6.
 
-The site's generic HTTPS address is https://clipconvert-web-production.up.railway.app.
+**Required Railway settings for this deployment:**
+
+1. Enable **Outbound IPv6** for the ClipConvert service (Railway Settings → Networking).
+2. Set the service variable `PREFER_IPV6=1`. The Python backend binds yt-dlp's outgoing requests to IPv6 when this flag is enabled.
+3. Keep `yt-dlp[default]` current, with Node 22 and FFmpeg included in the provided Dockerfile.
+4. Retain the deployed health check at `/api/health` and single-instance media storage until shared job storage has been implemented.
+
+**Verified result:** GitHub Actions [Live production checks](https://github.com/customerservice-prog/converter/actions/runs/42507970967) completed both MP4 360p and MP3 192kbps conversions of `NY6acnscmwo`, polled for ready jobs, requested actual downloadable results from Railway, and validated the format responses and media bytes. File uploads were separately verified. The production smoke test now **fails** if either direct-link conversion or download fails, so the result cannot be hidden behind a passing homepage health check.
+
+**Important limitation:** YouTube can still change its access rules, restrict individual videos, or restrict the current IPv6 address. This test is proof that the specified formats worked at the time of testing, **not a guarantee that every YouTube URL will work indefinitely**. No personal Google credentials or cookie scraping is used. Only convert content you have permission to download. A permitted media-file upload option remains available.
+
+**Other settings:** `MAX_UPLOAD_MB` defaults to 100 MB. Uploads are checked with ffprobe and converted with FFmpeg, and temporary files are cleaned after their retention period.
