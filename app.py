@@ -333,7 +333,7 @@ def youtube_output_options(fmt:str,quality:int)->dict:
     if quality==0:
         # Match yt-dlp's default best-video-plus-best-audio selection.
         # No height cap: may select 1440p, 2160p, or higher source video.
-        return {"format":"bestvideo+bestaudio/best",
+        return {"format":"bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
                 "format_sort":["res","fps","hdr:12","vcodec","acodec"],
                 "merge_output_format":"mp4"}
     cap=str(quality)
@@ -392,14 +392,22 @@ def convert(jid,vid,fmt,quality):
                 percent=min(88,10+int(75*downloaded/total)) if total else 35
                 change(jid,progress=percent,message="Downloading media…")
             elif x.get("status")=="finished":
-                change(jid,progress=90,message="Finalizing your file…")
-        options={**opts,"progress_hooks":[progress],**youtube_output_options(fmt,quality)}
+                change(jid,progress=89,message="Download complete. Preparing media…")
+        def postprocess_progress(x):
+            if x.get("status")=="started":
+                change(jid,progress=90,message="Merging video and audio…")
+            elif x.get("status")=="finished":
+                change(jid,progress=94,message="Verifying finished media…")
+        options={**opts,"progress_hooks":[progress],
+                 "postprocessor_hooks":[postprocess_progress],
+                 **youtube_output_options(fmt,quality)}
         # process_info downloads the selected formats without repeating extraction.
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.process_info(info)
         files=sorted(directory.glob("*."+fmt))
         if not files: raise ValueError("No compatible output is available for this video.")
         if files[0].stat().st_size>FILE_LIMIT: raise ValueError("Converted file is too large.")
+        change(jid,progress=96,message="Checking audio compatibility…")
         audio_meta=ensure_mp4_audio(files[0]) if fmt=="mp4" else {}
         change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),
                actual_quality=quality_label(files[0],fmt),**audio_meta,ended=time.time())
