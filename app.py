@@ -24,7 +24,7 @@ MAX_UPLOAD_BYTES=max(5,int(os.getenv("MAX_UPLOAD_MB","100")))*1024*1024
 UPLOAD_EXTENSIONS={".mp4",".mov",".m4v",".webm",".mkv",".mp3",".m4a",".wav",".flac",".ogg",".aac"}
 ID=re.compile(r"^[A-Za-z0-9_-]{11}$")
 HOSTS={"youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"}
-DURATION_LIMIT={"mp3":14400,"mp4":1800}
+DURATION_LIMIT={"mp3":14400,"mp4":14400}
 QUALITIES={"mp3":(0,128,192,320),"mp4":(0,360,720,1080,1440,2160)}
 STORE=StateStore(database_path(MEDIA))
 jobs=STORE.load("job")
@@ -743,7 +743,7 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
                       "-c:a","aac","-b:a","256k" if quality==0 else "128k"]
             cmd+=["-movflags","+faststart"]
         cmd += [str(output)]
-        timeout=max(120,min(1800,int(duration*5)))
+        timeout=max(120,min(21600,int(duration*5)))
         error_lines=[]
         with subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
                               text=True,bufsize=1) as process:
