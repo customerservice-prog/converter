@@ -18,7 +18,7 @@ ROOT=Path(__file__).resolve().parent
 MEDIA=Path(os.getenv("MEDIA_DIR","/tmp/converter-media")); MEDIA.mkdir(parents=True,exist_ok=True)
 MAX_ACTIVE=max(1,int(os.getenv("MAX_ACTIVE_JOBS","2")))
 DAILY_LIMIT=max(1,int(os.getenv("DAILY_LIMIT","20")))
-FILE_LIMIT=max(10,int(os.getenv("MAX_FILE_MB","512")))*1024*1024
+FILE_LIMIT=max(10,int(os.getenv("MAX_FILE_MB","4096")))*1024*1024
 TTL=max(300,int(os.getenv("FILE_TTL_SECONDS","3600")))
 MAX_UPLOAD_BYTES=max(5,int(os.getenv("MAX_UPLOAD_MB","100")))*1024*1024
 UPLOAD_EXTENSIONS={".mp4",".mov",".m4v",".webm",".mkv",".mp3",".m4a",".wav",".flac",".ogg",".aac"}
