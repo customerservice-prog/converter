@@ -226,8 +226,21 @@ def restore_jobs():
         threading.Thread(target=convert_batch,args=(bid,),daemon=True).start()
 
 
+def reclaim_interrupted_video_parts():
+    """Only remove non-completed YouTube job fragments after a process restart.
+
+    Ready media and any uploaded source are left intact. A restarted job can
+    retrieve its source again; stale fragment/merge files consume scarce space.
+    """
+    with mutex:
+        interrupted=[jid for jid,job in jobs.items()
+                     if job.get("video_id") and job.get("state") in ("working","queued")]
+    for jid in interrupted:
+        shutil.rmtree(MEDIA/jid,ignore_errors=True)
+
 @app.on_event("startup")
 def resume_persistent_jobs():
+    reclaim_interrupted_video_parts()
     try:
         cleanup()
     except (OSError, sqlite3.OperationalError):
