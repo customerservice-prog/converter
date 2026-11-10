@@ -150,12 +150,17 @@ def cleanup():
             and not (j.get("batch_id") in batches and (
                 batches[j["batch_id"]].get("state")=="working" or
                 now-batches[j["batch_id"]].get("ended",now)<=TTL))]
+        expired_batches=[bid for bid,b in batches.items()
+            if b["state"] in ("complete","partial","failed") and now-b.get("ended",now)>TTL]
+        # Free expired files FIRST: SQLite writes cannot succeed on a full disk.
+        for k in expired:
+            shutil.rmtree(MEDIA/k,ignore_errors=True)
+        for bid in expired_batches:
+            shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
         for k in expired:
             jobs.pop(k,None)
             _last_saved.pop(k,None)
             STORE.drop("job",k)
-        expired_batches=[bid for bid,b in batches.items()
-            if b["state"] in ("complete","partial","failed") and now-b.get("ended",now)>TTL]
         for bid in expired_batches:
             batches.pop(bid,None)
             STORE.drop("batch",bid)
@@ -169,8 +174,6 @@ def cleanup():
                     STORE.drop(kind,ip)
                 elif len(bucket[ip])!=len(old_values):
                     STORE.put(kind,ip,bucket[ip])
-    for k in expired: shutil.rmtree(MEDIA/k,ignore_errors=True)
-    for bid in expired_batches: shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
     # Support submissions are private and have a defined retention window.
     STORE.prune("contact",90*86400)
 
@@ -555,9 +558,13 @@ async def headers(request:Request,call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","ffmpeg":bool(shutil.which("ffmpeg")),
-            "storage_ready":STORE.path.is_file(),
-            "storage_free_mb":round(shutil.disk_usage(MEDIA).free/1024/1024),
+    free_mb=round(shutil.disk_usage(MEDIA).free/1024/1024)
+    storage_ready=STORE.path.is_file()
+    ffmpeg_ready=bool(shutil.which("ffmpeg"))
+    return {"status":"ok" if (storage_ready and ffmpeg_ready and free_mb>=MIN_FREE_MB) else "degraded",
+            "ffmpeg":ffmpeg_ready,
+            "storage_ready":storage_ready,
+            "storage_free_mb":free_mb,
             "yt_dlp":yt_dlp.version.__version__,
             "youtube_ip_fallback":os.getenv("YOUTUBE_IP_FALLBACK","1")=="1",
             "features":["upload","youtube","thumbnail","best_quality_auto",
