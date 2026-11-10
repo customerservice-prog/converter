@@ -121,6 +121,17 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(len(files),32)
             self.assertIn("32 of 32 videos ready",archive.read("Batch Results.txt").decode())
 
+    def test_new_batch_rejected_gracefully_when_storage_is_full(self):
+        from types import SimpleNamespace
+        before=len(module.jobs)
+        with patch.object(module.shutil,"disk_usage",return_value=SimpleNamespace(free=0)):
+            response=client.post("/api/batches",json={
+                "links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
+                "format":"mp4","rights_confirmed":True})
+        self.assertEqual(response.status_code,503,response.text)
+        self.assertIn("storage",response.text.lower())
+        self.assertEqual(len(module.jobs),before)
+
     def test_in_progress_batch_stays_readable_and_downloadable_with_full_disk(self):
         # A full media volume must not break status polling or the ready files.
         import uuid
