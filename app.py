@@ -494,7 +494,7 @@ async def headers(request:Request,call_next):
             result.set_cookie(SESSION_COOKIE,cookie,max_age=86400*30,httponly=True,
                               secure=os.getenv("SITE_URL","").startswith("https://"),
                               samesite="lax")
-    if request.url.path.startswith("/api/"): result.headers["Cache-Control"]="no-store"
+    if request.url.path.startswith("/api/") or request.url.path=="/assets/main.js": result.headers["Cache-Control"]="no-store"
     return result
 
 @app.get("/api/health")
