@@ -223,6 +223,24 @@ def resume_persistent_jobs():
         cleanup()
     except (OSError, sqlite3.OperationalError):
         log.exception("Startup maintenance deferred by storage pressure")
+    if shutil.disk_usage(MEDIA).free < MIN_FREE_MB*1024*1024:
+        # Do not refill a saturated shared SQLite/media volume on restart.
+        # Keep finished files; expose a partial batch for download and retry.
+        with mutex:
+            for batch in batches.values():
+                if batch.get("state")!="working":
+                    continue
+                for jid in batch["job_ids"]:
+                    job=jobs.get(jid)
+                    if job and job.get("state") in ("working","queued"):
+                        job.update(state="error",progress=0,
+                                   error="Storage is full. Download finished videos and retry after space becomes available.",
+                                   message="Paused: storage full",ended=time.time())
+                success=sum(jobs[jid].get("state")=="ready" for jid in batch["job_ids"] if jid in jobs)
+                batch.update(state="partial" if success else "failed",
+                             message="Storage is full. Finished videos are available to download.",
+                             ended=time.time())
+        return
     restore_jobs()
 
 
@@ -435,6 +453,7 @@ def convert(jid,vid,fmt,quality):
     directory=MEDIA/jid; directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     url="https://www.youtube.com/watch?v="+vid
     try:
+        ensure_disk_space()
         change(jid,state="working",progress=3,message="Checking video…")
         opts={"source_address":"::" if os.getenv("PREFER_IPV6")=="1" else "0.0.0.0","js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
               "cachedir":False,"socket_timeout":20,"retries":2,"fragment_retries":2,
@@ -458,6 +477,8 @@ def convert(jid,vid,fmt,quality):
                duration=int(duration),progress=10,message="Preparing conversion…")
         def progress(x):
             if x.get("status")=="downloading":
+                if shutil.disk_usage(MEDIA).free < MIN_FREE_MB*1024*1024:
+                    raise ValueError("Storage full. Your finished videos remain available; retry this video after space is freed.")
                 downloaded=x.get("downloaded_bytes") or 0
                 if downloaded>FILE_LIMIT: raise ValueError("Source file is too large.")
                 total=x.get("total_bytes") or x.get("total_bytes_estimate") or 0
@@ -480,10 +501,16 @@ def convert(jid,vid,fmt,quality):
         if not files: raise ValueError("No compatible output is available for this video.")
         if files[0].stat().st_size>FILE_LIMIT: raise ValueError("Converted file is too large.")
         change(jid,progress=96,message="Checking audio compatibility…")
+        if fmt=="mp4" and shutil.disk_usage(MEDIA).free < (
+                files[0].stat().st_size + MIN_FREE_MB*1024*1024):
+            raise ValueError("Not enough storage to finish the MP4 audio verification. Retry after freeing storage.")
         audio_meta=ensure_mp4_audio(files[0]) if fmt=="mp4" else {}
         change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),
                actual_quality=quality_label(files[0],fmt),**audio_meta,ended=time.time())
     except Exception as exc:
+        # Remove incomplete video files before writing the failure to SQLite.
+        # Otherwise a filled media volume also makes job status persistence fail.
+        shutil.rmtree(directory,ignore_errors=True)
         log.warning("Job %s failed: %s",jid,type(exc).__name__)
         text=str(exc).lower()
         if youtube_access_challenge(exc):
@@ -493,7 +520,6 @@ def convert(jid,vid,fmt,quality):
         else:
             msg=str(exc) if isinstance(exc,ValueError) else "Conversion failed. This video may be restricted or temporarily unavailable."
         change(jid,state="error",progress=0,message="Conversion failed",error=msg,ended=time.time())
-        shutil.rmtree(directory,ignore_errors=True)
 
 @app.middleware("http")
 async def headers(request:Request,call_next):
