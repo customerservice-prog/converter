@@ -57,9 +57,9 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(r.status_code,400)
         self.assertIn("different",r.text.lower())
 
-    def test_maximum_ten_links(self):
+    def test_maximum_hundred_links(self):
         r=client.post("/api/batches",json={
-            "links":["https://youtu.be/"+V1]*11,
+            "links":["https://youtu.be/"+V1]*101,
             "format":"mp3","rights_confirmed":True})
         self.assertEqual(r.status_code,422)
 
