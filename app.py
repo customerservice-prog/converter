@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from durable import StateStore, database_path
+from durable import StateStore, database_path\nfrom studio_api import router as studio_router
 
 ROOT=Path(__file__).resolve().parent
 MEDIA=Path(os.getenv("MEDIA_DIR","/tmp/converter-media")); MEDIA.mkdir(parents=True,exist_ok=True)
@@ -38,7 +38,7 @@ MIN_FREE_MB=max(100,int(os.getenv("MIN_FREE_MB","200")))
 MAX_BATCH_LINKS=min(10,max(2,int(os.getenv("MAX_BATCH_LINKS","10"))))
 conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
 log=logging.getLogger("converter")
-app=FastAPI(title="Converter API",docs_url=None,redoc_url=None)
+app=FastAPI(title="Converter API",docs_url=None,redoc_url=None)\napp.include_router(studio_router)
 app.mount("/assets",StaticFiles(directory=ROOT/"static"),name="assets")
 
 SESSION_SECRET=os.getenv("SESSION_SECRET") or os.getenv("ADMIN_TOKEN") or secrets.token_urlsafe(48)
@@ -1108,7 +1108,7 @@ def copyright_report(payload:CopyrightRequest,request:Request):
     return accept_contact_message("copyright",payload.name,payload.email,message,request)
 
 
-@app.get("/admin",include_in_schema=False)
+@app.get("/studio",include_in_schema=False)\ndef studio_page():\n    return FileResponse(ROOT/"static"/"studio.html")\n\n@app.get("/admin",include_in_schema=False)
 def admin_page():
     return FileResponse(ROOT/"static"/"admin.html")
 
