@@ -147,7 +147,9 @@ def cleanup():
     now=time.time()
     with mutex:
         expired=[k for k,j in jobs.items() if j["state"] in ("ready","error") and now-j.get("ended",now)>TTL
-            and not (j.get("batch_id") in batches and batches[j["batch_id"]].get("state")=="working")]
+            and not (j.get("batch_id") in batches and (
+                batches[j["batch_id"]].get("state")=="working" or
+                now-batches[j["batch_id"]].get("ended",now)<=TTL))]
         for k in expired:
             jobs.pop(k,None)
             _last_saved.pop(k,None)
@@ -1040,41 +1042,29 @@ def safe_media_name(value:str)->str:
 
 @app.get("/api/download/{jid}/folder")
 def download_folder(jid:str):
-    """One ZIP per video containing a named folder and the unmodified output."""
-    cleanup()
+    """Stream each video's organized ZIP without a second disk copy."""
     with mutex:
         job=jobs.get(jid)
         if not job or job["state"]!="ready":
             raise HTTPException(404,"The folder download has expired.")
-        media=Path(job["file"])
-        title=safe_media_name(job.get("title") or "Video")
-        ext=job["format"]
-        quality=job.get("actual_quality") or "Unknown"
-        vid=job.get("video_id")
-        jobdir=MEDIA/jid
-        archive=jobdir/"organized.zip"
-        folder=title+" - "+jid[:8]
-        if not media.is_file():
-            raise HTTPException(404,"The converted media is no longer available.")
-        if not archive.is_file():
-            temporary=jobdir/("organized-"+uuid.uuid4().hex+".tmp")
-            try:
-                details=(
-                    f"Title: {job.get('title') or 'Video'}\n"
-                    f"Format: {ext.upper()}\n"
-                    f"Actual quality: {quality}\n"
-                    f"Source: {'https://www.youtube.com/watch?v='+vid if vid else 'Uploaded media'}\n"
-                    "Created by ClipConvert\n"
-                )
-                with zipfile.ZipFile(temporary,"w",compression=zipfile.ZIP_STORED,
-                                     allowZip64=True) as z:
-                    z.write(media,arcname=f"{folder}/{title}.{ext}")
-                    z.writestr(f"{folder}/Video Info.txt",details)
-                temporary.replace(archive)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-    return FileResponse(archive,media_type="application/zip",filename=folder+".zip")
+        job=dict(job)
+    media=Path(job["file"])
+    if not media.is_file():
+        raise HTTPException(404,"The converted media is no longer available.")
+    title=safe_media_name(job.get("title") or "Video")
+    ext=job["format"]
+    quality=job.get("actual_quality") or "Unknown"
+    vid=job.get("video_id")
+    folder=title+" - "+jid[:8]
+    details=(
+        f"Title: {job.get('title') or 'Video'}\n"
+        f"Format: {ext.upper()}\n"
+        f"Actual quality: {quality}\n"
+        f"Source: {'https://www.youtube.com/watch?v='+vid if vid else 'Uploaded media'}\n"
+        "Created by ClipConvert\n"
+    )
+    return stream_zip([(f"{folder}/{title}.{ext}",media),
+                       (f"{folder}/Video Info.txt",details)],folder+".zip")
 
 
 @app.get("/api/thumbnail/{vid}")
