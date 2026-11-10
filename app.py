@@ -12,7 +12,8 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from durable import StateStore, database_path\nfrom studio_api import router as studio_router
+from durable import StateStore, database_path
+from studio_api import router as studio_router
 
 ROOT=Path(__file__).resolve().parent
 MEDIA=Path(os.getenv("MEDIA_DIR","/tmp/converter-media")); MEDIA.mkdir(parents=True,exist_ok=True)
