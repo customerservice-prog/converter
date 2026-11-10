@@ -20,19 +20,20 @@ jobs:
           pip install -r requirements.txt httpx
       - name: Check backend and frontend syntax
         run: |
-          python -m compileall -q app.py
+          python -m compileall -q app.py studio_api.py shorts_studio.py
           node --check static/main.js
           node --check extension/popup.js
       - name: API and security unit tests
         run: python -m unittest discover -s tests -v
       - name: Build deployment Docker image
         run: docker build --tag clipconvert-ci .
-      - name: Smoke test container health
+      - name: Smoke test container health and Studio page
         run: |
           docker run -d --name clipconvert-ci -p 8080:8080 clipconvert-ci
           for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:8080/api/health; then exit 0; fi
+            if curl -fsS http://127.0.0.1:8080/api/health; then break; fi
             sleep 2
           done
-          docker logs clipconvert-ci
-          exit 1
+          curl -fsS http://127.0.0.1:8080/api/health
+          curl -fsS http://127.0.0.1:8080/studio | grep -q 'Shorts Studio'
+          curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/studio/jobs/invalid | grep -q '422'
