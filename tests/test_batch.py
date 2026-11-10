@@ -121,6 +121,44 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(len(files),32)
             self.assertIn("32 of 32 videos ready",archive.read("Batch Results.txt").decode())
 
+    def test_in_progress_batch_stays_readable_and_downloadable_with_full_disk(self):
+        # A full media volume must not break status polling or the ready files.
+        import uuid
+        bid=uuid.uuid4().hex
+        jid=uuid.uuid4().hex
+        waiting=uuid.uuid4().hex
+        folder=module.MEDIA/jid
+        folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+        media=folder/"saved.mp4"
+        media.write_bytes(b"already converted"+b"x"*400)
+        module.jobs[jid]={
+            "id":jid,"state":"ready","file":str(media),"title":"Saved video",
+            "format":"mp4","video_id":V1,"quality":0,"progress":100,
+            "created":time.time(),"batch_id":bid}
+        module.jobs[waiting]={
+            "id":waiting,"state":"queued","title":"Queued video","video_id":V2,
+            "format":"mp4","quality":0,"progress":0,"created":time.time(),"batch_id":bid}
+        module.batches[bid]={
+            "id":bid,"state":"working","format":"mp4","quality":0,
+            "job_ids":[jid,waiting],"message":"Converting","created":time.time()}
+        try:
+            with patch.object(module.shutil,"disk_usage",side_effect=OSError("disk full")):
+                progress=client.get("/api/batches/"+bid)
+                archive=client.get("/api/batches/"+bid+"/download")
+            self.assertEqual(progress.status_code,200,progress.text)
+            self.assertEqual(progress.json()["succeeded"],1)
+            self.assertEqual(progress.json()["state"],"working")
+            self.assertEqual(archive.status_code,200)
+            with zipfile.ZipFile(io.BytesIO(archive.content)) as z:
+                self.assertEqual(len([n for n in z.namelist() if n.endswith(".mp4")]),1)
+                self.assertEqual(z.read([n for n in z.namelist() if n.endswith(".mp4")][0]),media.read_bytes())
+        finally:
+            module.batches.pop(bid,None)
+            module.jobs.pop(jid,None)
+            module.jobs.pop(waiting,None)
+            import shutil
+            shutil.rmtree(folder,ignore_errors=True)
+
     def test_partial_failure_produces_downloadable_successes(self):
         def fake(jid,vid,fmt,quality):
             if vid==V2:
