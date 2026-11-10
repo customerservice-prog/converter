@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac, html, hashlib, secrets
+import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac, html, hashlib, secrets, queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from email.message import EmailMessage
@@ -9,7 +9,7 @@ from urllib.request import Request as HttpRequest, urlopen
 from typing import Literal
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, Response, HTMLResponse
+from fastapi.responses import FileResponse, Response, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from durable import StateStore, database_path
@@ -681,6 +681,74 @@ def retry_batch(bid:str):
     return public_batch(b)
 
 
+def stream_zip(entries:list[tuple[str,Path|str]],filename:str):
+    """Create an ordinary ZIP directly over HTTP; never duplicate media on disk.
+
+    ZipFile supports unseekable sinks. The bounded queue gives backpressure so
+    large batches use constant RAM, and disconnects stop the producer.
+    """
+    def chunks():
+        pending=queue.Queue(maxsize=16)
+        closed=threading.Event()
+        finished=object()
+
+        class Sink:
+            def write(self,data):
+                if not data:return 0
+                while not closed.is_set():
+                    try:
+                        pending.put(bytes(data),timeout=0.25)
+                        return len(data)
+                    except queue.Full:
+                        continue
+                raise BrokenPipeError("ZIP client disconnected")
+
+            def flush(self):
+                pass
+
+        def producer():
+            failure=None
+            try:
+                with zipfile.ZipFile(Sink(),"w",compression=zipfile.ZIP_STORED,
+                                     allowZip64=True) as archive:
+                    for name,source in entries:
+                        if isinstance(source,Path):
+                            archive.write(source,arcname=name)
+                        else:
+                            archive.writestr(name,source)
+            except BrokenPipeError:
+                return
+            except Exception as exc:
+                failure=exc
+                log.exception("Streaming ZIP download failed")
+            finally:
+                result=failure if failure is not None else finished
+                while not closed.is_set():
+                    try:
+                        pending.put(result,timeout=0.25)
+                        break
+                    except queue.Full:
+                        continue
+
+        threading.Thread(target=producer,daemon=True,
+                         name="zip-download").start()
+        try:
+            while True:
+                part=pending.get()
+                if part is finished:
+                    return
+                if isinstance(part,Exception):
+                    raise part
+                yield part
+        finally:
+            closed.set()
+
+    return StreamingResponse(
+        chunks(),media_type="application/zip",
+        headers={"Content-Disposition":f'attachment; filename="{filename}"',
+                 "Cache-Control":"no-store","X-Content-Type-Options":"nosniff"})
+
+
 @app.get("/api/batches/{bid}/download")
 def download_batch(bid:str):
     cleanup()
@@ -688,40 +756,28 @@ def download_batch(bid:str):
         batch=batches.get(bid)
         if not batch or batch["state"] not in ("complete","partial"):
             raise HTTPException(404,"The batch archive is not ready or has expired.")
-        items=[jobs[jid] for jid in batch["job_ids"] if jid in jobs]
-        ready=[(index,j) for index,j in enumerate(items,1)
-               if j["state"]=="ready" and Path(j["file"]).is_file()]
-        if not ready: raise HTTPException(404,"No completed files are available.")
-        folder=MEDIA/("batch-"+bid)
-        folder.mkdir(mode=0o700,parents=True,exist_ok=True)
-        archive=folder/"all-videos.zip"
-        if not archive.exists():
-            temporary=folder/("build-"+uuid.uuid4().hex+".tmp")
-            try:
-                lines=[f"Batch results: {len(ready)} of {len(items)} videos ready",""]
-                with zipfile.ZipFile(temporary,"w",compression=zipfile.ZIP_STORED,
-                                     allowZip64=True) as z:
-                    for index,job in enumerate(items,1):
-                        title=safe_media_name(job.get("title") or "YouTube video")
-                        if job["state"]=="ready" and Path(job["file"]).is_file():
-                            dirname=f"{index:02d} - {title}"
-                            media=Path(job["file"])
-                            z.write(media,arcname=f"{dirname}/{title}.{job['format']}")
-                            detail=(f"Title: {job.get('title') or 'YouTube video'}\n"
-                                    f"Format: {job['format'].upper()}\n"
-                                    f"Quality: {job.get('actual_quality') or 'Unknown'}\n"
-                                    f"Source: https://www.youtube.com/watch?v={job['video_id']}\n")
-                            z.writestr(f"{dirname}/Video Info.txt",detail)
-                            lines.append(f"{index:02d}. OK — {job.get('title') or title}")
-                        else:
-                            lines.append(f"{index:02d}. FAILED — {job.get('title') or title}: {job.get('error') or 'File unavailable'}")
-                    z.writestr("Batch Results.txt","\n".join(lines)+"\n")
-                temporary.replace(archive)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-    return FileResponse(archive,media_type="application/zip",
-                        filename="ClipConvert-"+bid[:8]+"-all-videos.zip")
+        items=[dict(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
+    ready=[job for job in items if job["state"]=="ready"
+           and job.get("file") and Path(job["file"]).is_file()]
+    if not ready: raise HTTPException(404,"No completed files are available.")
+    entries=[]
+    lines=[f"Batch results: {len(ready)} of {len(items)} videos ready",""]
+    for index,job in enumerate(items,1):
+        title=safe_media_name(job.get("title") or "YouTube video")
+        if job["state"]=="ready" and job.get("file") and Path(job["file"]).is_file():
+            dirname=f"{index:02d} - {title}"
+            media=Path(job["file"])
+            entries.append((f"{dirname}/{title}.{job['format']}",media))
+            details=(f"Title: {job.get('title') or 'YouTube video'}\n"
+                     f"Format: {job['format'].upper()}\n"
+                     f"Quality: {job.get('actual_quality') or 'Unknown'}\n"
+                     f"Source: https://www.youtube.com/watch?v={job['video_id']}\n")
+            entries.append((f"{dirname}/Video Info.txt",details))
+            lines.append(f"{index:02d}. OK — {job.get('title') or title}")
+        else:
+            lines.append(f"{index:02d}. FAILED — {job.get('title') or title}: {job.get('error') or 'File unavailable'}")
+    entries.append(("Batch Results.txt","\n".join(lines)+"\n"))
+    return stream_zip(entries,"ClipConvert-"+bid[:8]+"-all-videos.zip")
 
 
 @app.post("/api/jobs",status_code=202)
