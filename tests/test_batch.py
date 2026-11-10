@@ -97,6 +97,30 @@ class BatchTests(unittest.TestCase):
             self.assertIn("2 of 2 videos ready",z.read("Batch Results.txt").decode())
             self.assertEqual(z.read(files[0]),("test converted media for "+V1).encode()*100)
 
+    def test_thirty_two_video_zip_streams_without_archive_disk_space(self):
+        # Reproduce the 32-link failure without contacting YouTube.
+        ids=[str(i).zfill(11) for i in range(32)]
+        with patch.object(module,"convert",mock_conversion):
+            response=client.post("/api/batches",json={
+                "links":["https://youtu.be/"+vid for vid in ids],
+                "format":"mp4","rights_confirmed":True})
+            self.assertEqual(response.status_code,202,response.text)
+            bid=response.json()["id"]
+            batch=wait_batch(bid)
+        self.assertEqual(batch["succeeded"],32)
+        old_archive=module.MEDIA/("batch-"+bid)/"all-videos.zip"
+        self.assertFalse(old_archive.exists())
+        # A full disk must not prevent downloading already completed media.
+        with patch.object(module.shutil,"disk_usage",side_effect=OSError("disk full")):
+            downloaded=client.get(batch["download_url"])
+        self.assertEqual(downloaded.status_code,200)
+        self.assertFalse(old_archive.exists())
+        with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+            self.assertIsNone(archive.testzip())
+            files=[name for name in archive.namelist() if name.endswith(".mp4")]
+            self.assertEqual(len(files),32)
+            self.assertIn("32 of 32 videos ready",archive.read("Batch Results.txt").decode())
+
     def test_partial_failure_produces_downloadable_successes(self):
         def fake(jid,vid,fmt,quality):
             if vid==V2:
