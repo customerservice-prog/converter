@@ -39,6 +39,6 @@ class StudioIntegration(unittest.TestCase):
         self.assertEqual(self.client.get(url.split("?")[0]+"?token=bad").status_code,404)
         result=self.client.get(url)
         self.assertEqual(result.status_code,200)
-        self.assertTrue(result.content.startswith(b"\\x00\\x00"))
+        self.assertTrue(result.content.startswith(bytes([0,0])))
         self.assertGreater(len(result.content),1000)
 if __name__=="__main__":unittest.main()
