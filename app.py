@@ -17,7 +17,7 @@ from durable import StateStore, database_path
 ROOT=Path(__file__).resolve().parent
 MEDIA=Path(os.getenv("MEDIA_DIR","/tmp/converter-media")); MEDIA.mkdir(parents=True,exist_ok=True)
 MAX_ACTIVE=max(1,int(os.getenv("MAX_ACTIVE_JOBS","2")))
-DAILY_LIMIT=max(1,int(os.getenv("DAILY_LIMIT","20")))
+DAILY_LIMIT=max(100,int(os.getenv("DAILY_LIMIT","120")))
 FILE_LIMIT=max(10,int(os.getenv("MAX_FILE_MB","4096")))*1024*1024
 TTL=max(300,int(os.getenv("FILE_TTL_SECONDS","3600")))
 MAX_UPLOAD_BYTES=max(5,int(os.getenv("MAX_UPLOAD_MB","100")))*1024*1024
@@ -33,9 +33,9 @@ quota=defaultdict(list,STORE.load("quota"))
 contact_quota=defaultdict(list,STORE.load("contact_quota"))
 mutex=threading.RLock()
 _last_saved={}
-MAX_QUEUE_JOBS=max(3,int(os.getenv("MAX_QUEUE_JOBS","32")))
+MAX_QUEUE_JOBS=max(100,int(os.getenv("MAX_QUEUE_JOBS","128")))
 MIN_FREE_MB=max(100,int(os.getenv("MIN_FREE_MB","200")))
-MAX_BATCH_LINKS=min(10,max(2,int(os.getenv("MAX_BATCH_LINKS","10"))))
+MAX_BATCH_LINKS=min(100,max(2,int(os.getenv("MAX_BATCH_LINKS","100"))))
 conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
 log=logging.getLogger("converter")
 app=FastAPI(title="Converter API",docs_url=None,redoc_url=None)
