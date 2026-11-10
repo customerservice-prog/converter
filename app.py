@@ -343,6 +343,66 @@ def youtube_output_options(fmt:str,quality:int)->dict:
             "merge_output_format":"mp4"}
 
 
+
+def youtube_access_challenge(exc:Exception)->bool:
+    """Only retry another public client/network family for access challenges."""
+    reason=str(exc).lower()
+    return any(term in reason for term in (
+        "sign in to confirm", "not a bot", "bot verification",
+        "this app is not supported", "not available on this app",
+        "http error 429", "too many requests"))
+
+
+def fetch_public_video_info(url:str,opts:dict,fmt:str,quality:int,notify=None)->tuple[dict,dict]:
+    """Resolve a public YouTube video with bounded, ordinary client fallbacks.
+
+    The first attempt preserves Railway's previously successful IPv6 address.
+    If both public playback clients reject that address, try IPv4, where it is
+    available. Never use cookies, account credentials, paid proxies or tokens.
+    """
+    preferred=opts.get("source_address","0.0.0.0")
+    other="0.0.0.0" if preferred=="::" else "::"
+    addresses=[preferred]
+    if os.getenv("YOUTUBE_IP_FALLBACK","1")=="1":
+        addresses.append(other)
+    # Avoid rapid requests that may trigger extra rate limiting.
+    profiles=(None,("tv","web_safari"))
+    last_error=None
+    for address in addresses:
+        for clients in profiles:
+            check_opts={**opts,**youtube_output_options(fmt,quality),
+                        "source_address":address}
+            check_opts.pop("extractor_args",None)
+            if clients:
+                check_opts["extractor_args"]={
+                    "youtube":{"player_client":list(clients)}}
+            try:
+                if notify:
+                    notify("Checking available video formats…")
+                with yt_dlp.YoutubeDL(check_opts) as extractor:
+                    info=extractor.extract_info(url,download=False)
+                if not info:
+                    raise ValueError("No usable video metadata was returned.")
+                final_opts={"source_address":address}
+                if clients:
+                    final_opts["extractor_args"]={
+                        "youtube":{"player_client":list(clients)}}
+                return info,final_opts
+            except yt_dlp.utils.DownloadError as exc:
+                if not youtube_access_challenge(exc):
+                    raise
+                last_error=exc
+                # No specific URL or account data is added to public logs.
+                log.info("YouTube public playback challenged; address_family=%s profile=%s",
+                         "ipv6" if address=="::" else "ipv4",
+                         "alternate" if clients else "default")
+                if clients:
+                    time.sleep(1)
+    if last_error:
+        raise last_error
+    raise ValueError("Could not retrieve public video information.")
+
+
 def convert(jid,vid,fmt,quality):
     directory=MEDIA/jid; directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     url="https://www.youtube.com/watch?v="+vid
@@ -352,28 +412,12 @@ def convert(jid,vid,fmt,quality):
               "cachedir":False,"socket_timeout":20,"retries":2,"fragment_retries":2,
               "concurrent_fragment_downloads":min(8,max(1,int(os.getenv("DOWNLOAD_FRAGMENTS","6")))),
               "outtmpl":str(directory/"%(id)s.%(ext)s"),"restrictfilenames":True}
-        # Resolve formats once and reuse the resulting download URLs.
-        clients_to_try=(None, ("tv", "web_safari"), ("web_embedded",), ("android_vr",))
-        for index,clients in enumerate(clients_to_try):
-            check_opts={**opts,**youtube_output_options(fmt,quality)}
-            if clients:
-                check_opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
-                change(jid,message="Checking available video formats…")
-            try:
-                with yt_dlp.YoutubeDL(check_opts) as extractor:
-                    info=extractor.extract_info(url,download=False)
-                if clients:
-                    opts["extractor_args"]={"youtube":{"player_client":list(clients)}}
-                break
-            except yt_dlp.utils.DownloadError as e:
-                reason=str(e).lower()
-                challenge=any(term in reason for term in (
-                    "sign in to confirm", "not a bot", "not available on this app",
-                    "this video is unavailable", "video unavailable"))
-                if index+1<len(clients_to_try) and challenge:
-                    log.info("Public playback profile %d rejected video %s; trying next profile",index,vid)
-                    continue
-                raise
+        # Resolve once, fall back to the other IP family only when the
+        # preferred public access path is challenged by YouTube.
+        info,access_opts=fetch_public_video_info(
+            url,opts,fmt,quality,
+            notify=lambda message:change(jid,message=message))
+        opts.update(access_opts)
         if not info or info.get("is_live") or info.get("live_status") in ("is_live","is_upcoming"):
             raise ValueError("Live videos can only be converted after they end.")
         duration=info.get("duration")
@@ -414,7 +458,7 @@ def convert(jid,vid,fmt,quality):
     except Exception as exc:
         log.warning("Job %s failed: %s",jid,type(exc).__name__)
         text=str(exc).lower()
-        if "sign in to confirm" in text or "not a bot" in text:
+        if youtube_access_challenge(exc):
             msg=("YouTube is requiring sign-in verification from this server. "
                  "This link cannot be converted here right now. If you have the media file, "
                  "choose Upload File to convert it instead.")
@@ -459,6 +503,7 @@ def health():
             "storage_ready":STORE.path.is_file(),
             "storage_free_mb":round(shutil.disk_usage(MEDIA).free/1024/1024),
             "yt_dlp":yt_dlp.version.__version__,
+            "youtube_ip_fallback":os.getenv("YOUTUBE_IP_FALLBACK","1")=="1",
             "features":["upload","youtube","thumbnail","best_quality_auto",
                         "organized_folders","parallel_fragments","batch_links",
                         "aac_mp4_audio","durable_jobs","contact_inbox","retry"]}

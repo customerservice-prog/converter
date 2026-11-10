@@ -38,7 +38,8 @@ class QualityTests(unittest.TestCase):
 
     def test_auto_youtube_is_not_resolution_capped(self):
         options=youtube_output_options("mp4",0)
-        self.assertEqual(options["format"],"bestvideo+bestaudio/best")
+        self.assertEqual(options["format"],"bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best")
+        self.assertIn("bestvideo+bestaudio",options["format"])
         self.assertNotIn("height<=",options["format"])
         self.assertEqual(options["merge_output_format"],"mp4")
         self.assertIn("res",options["format_sort"])
