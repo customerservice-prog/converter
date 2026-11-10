@@ -298,9 +298,13 @@ function updateBatchPanel(data){
   const pct=data.total?Math.min(100,Math.round(progress/data.total)):0;
   $("batchProgressFill").style.width=pct+"%";
   $("batchProgressTrack").setAttribute("aria-valuenow",String(pct));
-  $("batchStatus").textContent=terminal
-    ?(data.failed?"Batch finished — "+data.failed+" failed":"All videos are ready!")
-    :"Converting "+data.total+" videos…";
+  const storageBlocked=/storage (is )?full|storage full/i.test(data.message||"") ||
+    items.some(item=>item.state==="error"&&/storage (is )?full|not enough storage/i.test(item.error||""));
+  $("batchStatus").textContent=storageBlocked
+    ? "Storage full — "+data.succeeded+" videos are saved"
+    : terminal
+      ? (data.failed?"Batch finished — "+data.failed+" failed":"All videos are ready!")
+      : "Converting "+data.total+" videos…";
   $("batchSummary").textContent=data.processed+" of "+data.total+" completed · "+
     data.succeeded+" ready · "+data.failed+" failed";
   $("batchRows").replaceChildren(...items.map(makeBatchRow));
@@ -309,7 +313,9 @@ function updateBatchPanel(data){
   $("batchDownload").textContent="↓ Download "+data.succeeded+" videos in one ZIP";
   $("batchReset").hidden=!terminal;
   $("batchRetry").hidden=!(terminal && Number(data.failed)>0);
-  if(terminal && data.state==="failed")
+  if(storageBlocked)
+    showError("batchError","ClipConvert storage is full. Download the completed videos now. The remaining videos can be retried once storage is available.");
+  else if(terminal && data.state==="failed")
     showError("batchError","None of the videos could be converted. See individual errors above.");
   else showError("batchError","");
 }
@@ -327,8 +333,10 @@ async function pollBatch(id){
     }
     batchPollErrors++;
     if(batchPollErrors<=20){
-      $("batchStatus").textContent="Reconnecting — your batch is saved…";
-      showError("batchError","Railway may be updating. We'll reconnect automatically without starting the videos again.");
+      $("batchStatus").textContent="Checking connection to your saved batch…";
+      showError("batchError",error.status>=500
+        ?"ClipConvert returned a server error. Retrying the status check; any completed downloads shown above remain available."
+        :"Connection interrupted. Retrying the status check without submitting the videos again.");
       batchTimer=setTimeout(()=>pollBatch(id),Math.min(12000,2000+batchPollErrors*750));
     }else{
       showError("batchError","The server is unavailable. Your batch is saved; refresh this page to check its progress.");
