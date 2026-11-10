@@ -157,6 +157,10 @@ def cleanup():
             shutil.rmtree(MEDIA/k,ignore_errors=True)
         for bid in expired_batches:
             shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
+        # If the shared volume remains exhausted, serve existing downloads
+        # without attempting SQLite writes that would fail with HTTP 500.
+        if shutil.disk_usage(MEDIA).free < MIN_FREE_MB*1024*1024:
+            return
         for k in expired:
             jobs.pop(k,None)
             _last_saved.pop(k,None)
