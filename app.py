@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac, html, hashlib, secrets, queue
+import logging, os, re, shutil, smtplib, threading, time, uuid, subprocess, json, zipfile, hmac, html, hashlib, secrets, queue, sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from email.message import EmailMessage
@@ -123,10 +123,31 @@ def change(jid,**kwargs):
             save_job(jid,force=("state" in kwargs and kwargs["state"]!=previous)
                      or kwargs.get("state") in ("ready","error"))
 
+def reclaim_unused_archives():
+    """Remove legacy ZIP copies but preserve all converted media files."""
+    cutoff=time.time()-300
+    for folder in MEDIA.iterdir():
+        if not folder.is_dir():
+            continue
+        if folder.name.startswith("batch-"):
+            candidates=[folder/"all-videos.zip",*folder.glob("build-*.tmp")]
+        elif re.fullmatch(r"[a-f0-9]{32}",folder.name):
+            candidates=[folder/"organized.zip",*folder.glob("organized-*.tmp")]
+        else:
+            continue
+        for file in candidates:
+            try:
+                if file.is_file() and file.stat().st_mtime<cutoff:
+                    file.unlink()
+            except OSError:
+                log.warning("Legacy ZIP cache cleanup failed")
+
 def cleanup():
+    reclaim_unused_archives()
     now=time.time()
     with mutex:
-        expired=[k for k,j in jobs.items() if j["state"] in ("ready","error") and now-j.get("ended",now)>TTL]
+        expired=[k for k,j in jobs.items() if j["state"] in ("ready","error") and now-j.get("ended",now)>TTL
+            and not (j.get("batch_id") in batches and batches[j["batch_id"]].get("state")=="working")]
         for k in expired:
             jobs.pop(k,None)
             _last_saved.pop(k,None)
@@ -138,12 +159,13 @@ def cleanup():
             STORE.drop("batch",bid)
         for bucket in (quota,contact_quota):
             for ip in list(bucket):
-                bucket[ip]=[t for t in bucket[ip] if now-t<86400]
+                old_values=bucket[ip]
+                bucket[ip]=[t for t in old_values if now-t<86400]
                 kind="quota" if bucket is quota else "contact_quota"
                 if not bucket[ip]:
                     bucket.pop(ip,None)
                     STORE.drop(kind,ip)
-                else:
+                elif len(bucket[ip])!=len(old_values):
                     STORE.put(kind,ip,bucket[ip])
     for k in expired: shutil.rmtree(MEDIA/k,ignore_errors=True)
     for bid in expired_batches: shutil.rmtree(MEDIA/("batch-"+bid),ignore_errors=True)
@@ -197,15 +219,21 @@ def restore_jobs():
 
 @app.on_event("startup")
 def resume_persistent_jobs():
-    cleanup()
+    try:
+        cleanup()
+    except (OSError, sqlite3.OperationalError):
+        log.exception("Startup maintenance deferred by storage pressure")
     restore_jobs()
 
 
 def janitor():
     while True:
-        time.sleep(300)
-        cleanup()
-        flush_contact_notifications()
+        time.sleep(60)
+        try:
+            cleanup()
+            flush_contact_notifications()
+        except (OSError, sqlite3.OperationalError):
+            log.exception("Storage maintenance deferred until space is available")
 
 threading.Thread(target=janitor,daemon=True,name="media-cleanup").start()
 
@@ -530,7 +558,7 @@ def public_batch(batch:dict)->dict:
                 "processed":done,"succeeded":successes,"failed":sum(i["state"]=="error" for i in items),
                 "items":items,"message":batch.get("message",""),
                 "download_url":None}
-        if batch["state"] in ("complete","partial") and successes:
+        if successes:
             result["download_url"]="/api/batches/"+batch["id"]+"/download"
         return result
 
@@ -623,7 +651,7 @@ def create_batch(payload:BatchRequest,request:Request):
 
 @app.get("/api/batches/{bid}")
 def get_batch(bid:str):
-    cleanup()
+    # No database writes on every status poll.
     with mutex:
         batch=batches.get(bid)
         if not batch: raise HTTPException(404,"This batch has expired or does not exist.")
@@ -751,10 +779,9 @@ def stream_zip(entries:list[tuple[str,Path|str]],filename:str):
 
 @app.get("/api/batches/{bid}/download")
 def download_batch(bid:str):
-    cleanup()
     with mutex:
         batch=batches.get(bid)
-        if not batch or batch["state"] not in ("complete","partial"):
+        if not batch or batch["state"] not in ("working","complete","partial"):
             raise HTTPException(404,"The batch archive is not ready or has expired.")
         items=[dict(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
     ready=[job for job in items if job["state"]=="ready"
