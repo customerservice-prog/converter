@@ -33,6 +33,8 @@ mutex=threading.RLock()
 _last_saved={}
 MAX_QUEUE_JOBS=max(100,int(os.getenv("MAX_QUEUE_JOBS","128")))
 MIN_FREE_MB=max(100,int(os.getenv("MIN_FREE_MB","200")))
+# Reserve room to merge high-resolution MP4 files before starting another one.
+BATCH_MP4_WORKSPACE_MB=max(MIN_FREE_MB+300,int(os.getenv("BATCH_MP4_WORKSPACE_MB","1200")))
 MAX_BATCH_LINKS=min(100,max(2,int(os.getenv("MAX_BATCH_LINKS","100"))))
 conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
 active_processes={}
@@ -149,6 +151,26 @@ def save_job(jid,force=False):
     if force or now-last>2:
         STORE.put("job",jid,job)
         _last_saved[jid]=now
+
+
+class StoragePaused(Exception):
+    """A batch needs a download to release temporary storage; not a failed job."""
+
+
+def storage_error(message):
+    content=str(message or "").lower()
+    return any(term in content for term in ("storage full","storage is full",
+        "not enough storage","disk full","no space left","temporary storage"))
+
+
+def pause_if_low_capacity(jid,required_mb):
+    if free_storage_mb() >= required_mb:
+        return
+    with mutex:
+        item=jobs.get(jid)
+        if item and item.get("batch_id"):
+            raise StoragePaused("Download completed videos to free space; conversion will resume automatically.")
+    raise ValueError("Not enough storage for this video. Download completed media and retry.")
 
 
 class ConversionStopped(Exception):
@@ -575,6 +597,7 @@ def convert(jid,vid,fmt,quality):
     try:
         require_running(jid)
         ensure_disk_space()
+        pause_if_low_capacity(jid,BATCH_MP4_WORKSPACE_MB if fmt=="mp4" else MIN_FREE_MB+200)
         change(jid,state="working",progress=3,message="Checking video…")
         opts={"source_address":"::" if os.getenv("PREFER_IPV6")=="1" else "0.0.0.0","js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
               "cachedir":False,"socket_timeout":20,"retries":2,"fragment_retries":2,
@@ -600,8 +623,7 @@ def convert(jid,vid,fmt,quality):
         def progress(x):
             require_running(jid)
             if x.get("status")=="downloading":
-                if shutil.disk_usage(MEDIA).free < MIN_FREE_MB*1024*1024:
-                    raise ValueError("Storage full. Your finished videos remain available; retry this video after space is freed.")
+                pause_if_low_capacity(jid,MIN_FREE_MB+100)
                 downloaded=x.get("downloaded_bytes") or 0
                 if downloaded>FILE_LIMIT: raise ValueError("Source file is too large.")
                 total=x.get("total_bytes") or x.get("total_bytes_estimate") or 0
@@ -626,13 +648,21 @@ def convert(jid,vid,fmt,quality):
         if not files: raise ValueError("No compatible output is available for this video.")
         if files[0].stat().st_size>FILE_LIMIT: raise ValueError("Converted file is too large.")
         change(jid,progress=96,message="Checking audio compatibility…")
-        if fmt=="mp4" and shutil.disk_usage(MEDIA).free < (
-                files[0].stat().st_size + MIN_FREE_MB*1024*1024):
-            raise ValueError("Not enough storage to finish the MP4 audio verification. Retry after freeing storage.")
+        if fmt=="mp4":
+            audio_details=mp4_audio_info(files[0])
+            # A valid AAC source needs no second copy. Re-encoding Opus audio
+            # requires space for another full-size MP4 while preserving quality.
+            if audio_details.get("codec_name")!="aac" or int(audio_details.get("channels") or 0)>2:
+                required=MIN_FREE_MB+max(1,(files[0].stat().st_size+1048575)//1048576)
+                pause_if_low_capacity(jid,required)
         audio_meta=ensure_mp4_audio(files[0]) if fmt=="mp4" else {}
         require_running(jid)
         change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),
                actual_quality=quality_label(files[0],fmt),**audio_meta,ended=time.time())
+    except StoragePaused as exc:
+        shutil.rmtree(directory,ignore_errors=True)
+        change(jid,state="paused",progress=0,message=str(exc),error=None,ended=time.time())
+        return
     except Exception as exc:
         # Remove incomplete video files before writing the failure to SQLite.
         # Otherwise a filled media volume also makes job status persistence fail.
