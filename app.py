@@ -37,6 +37,8 @@ MAX_QUEUE_JOBS=max(100,int(os.getenv("MAX_QUEUE_JOBS","128")))
 MIN_FREE_MB=max(100,int(os.getenv("MIN_FREE_MB","200")))
 MAX_BATCH_LINKS=min(100,max(2,int(os.getenv("MAX_BATCH_LINKS","100"))))
 conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
+transfer_refs=defaultdict(int)
+completed_transfers=set()
 log=logging.getLogger("converter")
 app=FastAPI(title="Converter API",docs_url=None,redoc_url=None)
 app.mount("/assets",StaticFiles(directory=ROOT/"static"),name="assets")
@@ -99,6 +101,46 @@ def public(job):
         data["download_url"]="/api/download/"+job["id"]
         data["folder_url"]="/api/download/"+job["id"]+"/folder"
     return data
+
+def reserve_downloads(ids):
+    with mutex:
+        for jid in set(ids):transfer_refs[jid]+=1
+
+def finish_downloads(ids,completed):
+    with mutex:
+        for jid in set(ids):
+            if completed:completed_transfers.add(jid)
+            transfer_refs[jid]=max(0,transfer_refs[jid]-1)
+            if transfer_refs[jid]:continue
+            transfer_refs.pop(jid,None)
+            if jid not in completed_transfers:continue
+            completed_transfers.discard(jid)
+            job=jobs.get(jid)
+            if not job or job.get("state")!="ready":continue
+            shutil.rmtree(MEDIA/jid,ignore_errors=True)
+            job.update(state="downloaded",file=None,
+                       message="Downloaded · server copy deleted",ended=time.time())
+            try:save_job(jid,True)
+            except (OSError,sqlite3.OperationalError):
+                log.warning("Could not persist downloaded job metadata")
+
+def stream_file_after_download(path,filename,media_type,jid):
+    reserve_downloads([jid])
+    def content():
+        complete=False
+        try:
+            with path.open("rb") as src:
+                while True:
+                    part=src.read(1024*1024)
+                    if not part:
+                        complete=True
+                        break
+                    yield part
+        finally:
+            finish_downloads([jid],complete)
+    return StreamingResponse(content(),media_type=media_type,
+        headers={"Content-Disposition":'attachment; filename="'+filename+'"',
+                 "Cache-Control":"no-store"})
 
 def save_job(jid,force=False):
     job=jobs.get(jid)
@@ -603,14 +645,16 @@ def run_queued_upload(jid:str,extension:str,name:str,fmt:str,quality:int)->None:
 def public_batch(batch:dict)->dict:
     with mutex:
         items=[public(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
-        done=sum(i["state"] in ("ready","error") for i in items)
-        successes=sum(i["state"]=="ready" for i in items)
+        done=sum(i["state"] in ("ready","downloaded","error") for i in items)
+        successes=sum(i["state"] in ("ready","downloaded") for i in items)
+        available=sum(i["state"]=="ready" for i in items)
         result={"id":batch["id"],"state":batch["state"],"format":batch["format"],
                 "quality":batch["quality"],"total":len(batch["job_ids"]),
                 "processed":done,"succeeded":successes,"failed":sum(i["state"]=="error" for i in items),
                 "items":items,"message":batch.get("message",""),
+                "available":available,
                 "download_url":None}
-        if successes:
+        if available:
             result["download_url"]="/api/batches/"+batch["id"]+"/download"
         return result
 
@@ -626,7 +670,7 @@ def convert_batch(batch_id:str)->None:
         fmt=batch["format"]
         quality=batch["quality"]
         pairs=[(jid,jobs[jid]["video_id"]) for jid in ids
-               if jid in jobs and jobs[jid]["state"]!="ready" and jobs[jid]["state"]!="error"]
+               if jid in jobs and jobs[jid]["state"] not in ("ready","downloaded","error")]
     try:
         with ThreadPoolExecutor(max_workers=min(2,MAX_ACTIVE),thread_name_prefix="clip-batch") as executor:
             futures=[executor.submit(run_queued_conversion,jid,vid,fmt,quality)
@@ -643,12 +687,12 @@ def convert_batch(batch_id:str)->None:
             for jid in ids:
                 item=jobs.get(jid)
                 if item:
-                    if item["state"] not in ("ready","error"):
+                    if item["state"] not in ("ready","downloaded","error"):
                         item.update(state="error",error="This conversion stopped unexpectedly.",
                                     progress=0,message="Conversion failed")
                     item["ended"]=now
                     save_job(jid,True)
-            success=sum(jobs[jid]["state"]=="ready" for jid in ids if jid in jobs)
+            success=sum(jobs[jid]["state"] in ("ready","downloaded") for jid in ids if jid in jobs)
             batch["state"]="complete" if success==len(ids) else "partial" if success else "failed"
             batch["ended"]=now
             batch["message"]=f"{success} of {len(ids)} videos converted"
@@ -761,13 +805,16 @@ def retry_batch(bid:str):
     return public_batch(b)
 
 
-def stream_zip(entries:list[tuple[str,Path|str]],filename:str):
+def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
     """Create an ordinary ZIP directly over HTTP; never duplicate media on disk.
 
     ZipFile supports unseekable sinks. The bounded queue gives backpressure so
     large batches use constant RAM, and disconnects stop the producer.
     """
+    job_ids=list(job_ids or [])
+    if job_ids:reserve_downloads(job_ids)
     def chunks():
+        success=False
         pending=queue.Queue(maxsize=16)
         closed=threading.Event()
         finished=object()
@@ -816,12 +863,14 @@ def stream_zip(entries:list[tuple[str,Path|str]],filename:str):
             while True:
                 part=pending.get()
                 if part is finished:
+                    success=True
                     return
                 if isinstance(part,Exception):
                     raise part
                 yield part
         finally:
             closed.set()
+            if job_ids:finish_downloads(job_ids,success)
 
     return StreamingResponse(
         chunks(),media_type="application/zip",
@@ -856,7 +905,8 @@ def download_batch(bid:str):
         else:
             lines.append(f"{index:02d}. FAILED — {job.get('title') or title}: {job.get('error') or 'File unavailable'}")
     entries.append(("Batch Results.txt","\n".join(lines)+"\n"))
-    return stream_zip(entries,"ClipConvert-"+bid[:8]+"-all-videos.zip")
+    return stream_zip(entries,"ClipConvert-"+bid[:8]+"-all-videos.zip",
+                      [j["id"] for j in ready])
 
 
 @app.post("/api/jobs",status_code=202)
@@ -1054,7 +1104,8 @@ def download(jid:str):
         file=Path(job["file"]); title=job.get("title") or "download"
         name=(re.sub(r"[^a-zA-Z0-9._ -]","",title).strip()[:90] or "download")+"."+job["format"]
     if not file.is_file(): raise HTTPException(404,"The file is no longer available.")
-    return FileResponse(file,media_type="audio/mpeg" if job["format"]=="mp3" else "video/mp4",filename=name)
+    return stream_file_after_download(file,name,
+        "audio/mpeg" if job["format"]=="mp3" else "video/mp4",jid)
 
 
 def safe_media_name(value:str)->str:
@@ -1088,7 +1139,7 @@ def download_folder(jid:str):
         "Created by ClipConvert\n"
     )
     return stream_zip([(f"{folder}/{title}.{ext}",media),
-                       (f"{folder}/Video Info.txt",details)],folder+".zip")
+                       (f"{folder}/Video Info.txt",details)],folder+".zip",[jid])
 
 
 @app.get("/api/thumbnail/{vid}")
