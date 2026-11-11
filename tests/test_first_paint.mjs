@@ -132,11 +132,21 @@ try {
     }
     await route.fallback();
   });
+  page.on('pageerror',error=>console.log('AUTOSAVE_PAGE_ERROR',error.message));
   await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
   await page.locator('script[src*="20261111-streaming-autosave"]').waitFor({state:'attached',timeout:30000});
   await page.evaluate((id)=>openSavedConversion('batch',id),bid);
   await page.locator('#autoSaveChoose').click();
-  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 video(s) saved'),{timeout:20000});
+  await page.waitForTimeout(2200);
+  console.log('AUTOSAVE_DEBUG',JSON.stringify(await page.evaluate(()=>({
+    message:document.querySelector('#autoSaveStatus')?.textContent,
+    batch:document.querySelector('#batchStatus')?.textContent,
+    folder:document.querySelector('#autoSaveChoose')?.textContent,
+    saved:window.__autoSavedTestFiles||[],
+    supported:typeof window.showDirectoryPicker,
+    history:localStorage.getItem('clipconvert-recent-v1')
+  }))));
+  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 video(s) saved'),null,{timeout:6000});
   const files=await page.evaluate(()=>window.__autoSavedTestFiles);
   assert.equal(files.length,1,JSON.stringify(files));
   assert.equal(files[0].bytes,payload.length);
