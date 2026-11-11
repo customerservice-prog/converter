@@ -79,8 +79,6 @@ class BatchTests(unittest.TestCase):
         for j in batch["items"]:
             self.assertEqual(j["state"],"ready")
             self.assertEqual(j["quality"],0)
-            self.assertEqual(client.get(j["download_url"]).status_code,200)
-            self.assertEqual(client.get(j["folder_url"]).status_code,200)
         result=client.get(batch["download_url"])
         self.assertEqual(result.status_code,200,result.text[:400])
         self.assertIn("application/zip",result.headers["content-type"])
@@ -96,6 +94,32 @@ class BatchTests(unittest.TestCase):
             self.assertTrue(all(z.getinfo(p).compress_type==zipfile.ZIP_STORED for p in files))
             self.assertIn("2 of 2 videos ready",z.read("Batch Results.txt").decode())
             self.assertEqual(z.read(files[0]),("test converted media for "+V1).encode()*100)
+        after=client.get("/api/batches/"+bid).json()
+        self.assertEqual(after["succeeded"],2)
+        self.assertEqual(after["available"],0)
+        self.assertFalse(after["download_url"])
+        self.assertTrue(all(item["state"]=="downloaded" for item in after["items"]))
+        self.assertTrue(all(not (module.MEDIA/jid/"video.mp3").exists()
+                            for jid in module.batches[bid]["job_ids"]))
+
+    def test_single_folder_download_releases_media(self):
+        with patch.object(module,"convert",mock_conversion):
+            response=client.post("/api/jobs",json={
+                "url":"https://youtu.be/"+V3,"format":"mp3",
+                "rights_confirmed":True})
+            self.assertEqual(response.status_code,202,response.text)
+            jid=response.json()["id"]
+            for _ in range(200):
+                job=client.get("/api/jobs/"+jid).json()
+                if job["state"] in ("ready","error"):break
+                time.sleep(.02)
+        self.assertEqual(job["state"],"ready")
+        z=client.get(job["folder_url"])
+        self.assertEqual(z.status_code,200)
+        with zipfile.ZipFile(io.BytesIO(z.content)) as archive:
+            self.assertIsNone(archive.testzip())
+        self.assertEqual(client.get("/api/jobs/"+jid).json()["state"],"downloaded")
+        self.assertFalse((module.MEDIA/jid).exists())
 
     def test_thirty_two_video_zip_streams_without_archive_disk_space(self):
         # Reproduce the 32-link failure without contacting YouTube.
@@ -120,6 +144,7 @@ class BatchTests(unittest.TestCase):
             files=[name for name in archive.namelist() if name.endswith(".mp4")]
             self.assertEqual(len(files),32)
             self.assertIn("32 of 32 videos ready",archive.read("Batch Results.txt").decode())
+        self.assertEqual(client.get("/api/batches/"+bid).json()["available"],0)
 
     def test_new_batch_rejected_gracefully_when_storage_is_full(self):
         from types import SimpleNamespace
