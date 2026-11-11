@@ -752,12 +752,15 @@ def public_batch(batch:dict)->dict:
     with mutex:
         items=[public(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
         done=sum(i["state"] in ("ready","downloaded","error","cancelled") for i in items)
+        paused=sum(i["state"]=="paused" for i in items)
         successes=sum(i["state"] in ("ready","downloaded") for i in items)
         available=sum(i["state"]=="ready" for i in items)
         result={"id":batch["id"],"state":batch["state"],"format":batch["format"],
                 "quality":batch["quality"],"total":len(batch["job_ids"]),
                 "processed":done,"succeeded":successes,"failed":sum(i["state"]=="error" for i in items),
                 "cancelled":sum(i["state"]=="cancelled" for i in items),
+                "paused":paused,
+                "workspace_required_mb":BATCH_MP4_WORKSPACE_MB if batch["format"]=="mp4" else MIN_FREE_MB+200,
                 "items":items,"message":batch.get("message",""),
                 "available":available,
                 "storage_free_mb":free_storage_mb(),
@@ -782,11 +785,27 @@ def convert_batch(batch_id:str)->None:
                if jid in jobs and jobs[jid]["state"] not in ("ready","downloaded","error","cancelled")
                and not jobs[jid].get("cancel_requested")]
     try:
-        with ThreadPoolExecutor(max_workers=min(2,MAX_ACTIVE),thread_name_prefix="clip-batch") as executor:
-            futures=[executor.submit(run_queued_conversion,jid,vid,fmt,quality)
-                     for jid,vid in pairs]
-            for future in as_completed(futures):
-                future.result()
+        if fmt=="mp4":
+            # Limit workspace to one 4K file and its AAC conversion at a time.
+            for jid,vid in pairs:
+                with mutex:
+                    if batches.get(batch_id,{}).get("stop_requested"):
+                        break
+                if free_storage_mb()<BATCH_MP4_WORKSPACE_MB:
+                    change(jid,state="paused",progress=0,error=None,
+                           message="Waiting for completed downloads to free storage.")
+                    break
+                run_queued_conversion(jid,vid,fmt,quality)
+                with mutex:
+                    if jobs.get(jid,{}).get("state")=="paused":
+                        break
+        else:
+            with ThreadPoolExecutor(max_workers=min(2,MAX_ACTIVE),
+                                    thread_name_prefix="clip-batch") as executor:
+                futures=[executor.submit(run_queued_conversion,jid,vid,fmt,quality)
+                         for jid,vid in pairs]
+                for future in as_completed(futures):
+                    future.result()
     except Exception:
         log.exception("Batch conversion crashed")
     finally:
@@ -794,20 +813,34 @@ def convert_batch(batch_id:str)->None:
             now=time.time()
             batch=batches.get(batch_id)
             if not batch:return
+            space_pause=(not batch.get("stop_requested") and any(
+                jobs.get(jid,{}).get("state")=="paused" or
+                (jobs.get(jid,{}).get("state")=="error" and
+                 storage_error(jobs[jid].get("error")))
+                for jid in ids))
             for jid in ids:
                 item=jobs.get(jid)
-                if item:
-                    if item["state"] not in ("ready","downloaded","error","cancelled"):
-                        item.update(state="error",error="This conversion stopped unexpectedly.",
-                                    progress=0,message="Conversion failed")
+                if not item:
+                    continue
+                if space_pause and (item["state"] in ("queued","working","paused") or
+                                    (item["state"]=="error" and storage_error(item.get("error")))):
+                    item.update(state="paused",error=None,progress=0,
+                                message="Waiting for downloaded files to free storage.")
+                elif item["state"] not in ("ready","downloaded","error","cancelled","paused"):
+                    item.update(state="error",error="This conversion stopped unexpectedly.",
+                                progress=0,message="Conversion failed")
+                if item["state"] not in ("ready","downloaded"):
                     item["ended"]=now
-                    save_job(jid,True)
+                save_job(jid,True)
             success=sum(jobs[jid]["state"] in ("ready","downloaded") for jid in ids if jid in jobs)
             batch["state"]=("stopped" if batch.get("stop_requested") else
+                            "paused" if space_pause else
                             "complete" if success==len(ids) else "partial" if success else "failed")
             batch["ended"]=now
-            batch["message"]=("Stopped by user; completed videos remain downloadable" if batch.get("stop_requested")
-                               else f"{success} of {len(ids)} videos converted")
+            batch["message"]=("Stopped by user; completed videos remain downloadable"
+                              if batch.get("stop_requested") else
+                              "Storage nearly full. Download completed videos to resume automatically."
+                              if space_pause else f"{success} of {len(ids)} videos converted")
             STORE.put("batch",batch_id,batch)
 
 
