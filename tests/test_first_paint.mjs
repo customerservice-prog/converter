@@ -182,7 +182,8 @@ try {
   // Picking a new valid folder restores automatic saving without a page reload.
   await page.evaluate(()=>{window.showDirectoryPicker=window.__workingPicker});
   await page.locator('#autoSaveChoose').click();
-  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('2 video(s) saved'),null,{timeout:12000});
+  // Selecting a replacement folder resets its visible per-folder counter.
+  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 video(s) saved'),null,{timeout:12000});
   assert.equal(acks,2,'Replacement folder should allow a completed save to be acknowledged');
   assert.equal((await page.evaluate(()=>window.__autoSavedTestFiles)).length,2);
   await page.close();
