@@ -108,6 +108,7 @@ def reserve_downloads(ids):
         for jid in set(ids):transfer_refs[jid]+=1
 
 def finish_downloads(ids,completed):
+    affected_batches=set()
     with mutex:
         for jid in set(ids):
             if completed:completed_transfers.add(jid)
@@ -118,12 +119,16 @@ def finish_downloads(ids,completed):
             completed_transfers.discard(jid)
             job=jobs.get(jid)
             if not job or job.get("state")!="ready":continue
+            if job.get("batch_id"):affected_batches.add(job["batch_id"])
             shutil.rmtree(MEDIA/jid,ignore_errors=True)
             job.update(state="downloaded",file=None,
                        message="Downloaded · server copy deleted",ended=time.time())
             try:save_job(jid,True)
             except (OSError,sqlite3.OperationalError):
                 log.warning("Could not persist downloaded job metadata")
+    if completed:
+        for bid in affected_batches:
+            resume_batch_if_space(bid)
 
 def stream_file_after_download(path,filename,media_type,jid):
     reserve_downloads([jid])
@@ -929,7 +934,8 @@ def stop_batch(bid:str):
         if batch["state"] in ("complete","partial","failed","stopped"):
             return public_batch(batch)
         batch["stop_requested"]=True
-        batch["state"]="stopping"
+        batch["state"]="stopped" if batch.get("ended") else "stopping"
+        batch["ended"]=batch.get("ended") or (time.time() if batch["state"]=="stopped" else None)
         batch["message"]="Stopping unfinished videos…"
         for jid in batch["job_ids"]:
             job=jobs.get(jid)
@@ -995,6 +1001,53 @@ def retry_batch(bid:str):
         (MEDIA/("batch-"+bid)/"all-videos.zip").unlink(missing_ok=True)
     threading.Thread(target=convert_batch,args=(bid,),daemon=True).start()
     return public_batch(b)
+
+
+def resume_batch_if_space(bid):
+    """Automatically continue stopped-for-storage work after successful downloads.
+
+    Storage pauses never consume the ordinary retry counter. Completed work
+    remains untouched; external/source failures are not retried automatically.
+    """
+    with mutex:
+        batch=batches.get(bid)
+        if not batch or batch.get("stop_requested") or batch["state"] not in ("paused","partial","failed"):
+            return False
+        candidates=[jobs[jid] for jid in batch["job_ids"] if jid in jobs and (
+            jobs[jid]["state"]=="paused" or
+            (jobs[jid]["state"]=="error" and storage_error(jobs[jid].get("error"))))]
+        if not candidates:
+            return False
+        required=BATCH_MP4_WORKSPACE_MB if batch["format"]=="mp4" else MIN_FREE_MB+200
+        if free_storage_mb()<required:
+            return False
+        for job in candidates:
+            job.update(state="queued",progress=0,error=None,ended=None,
+                       message="Storage freed — resuming conversion…")
+            save_job(job["id"],True)
+        batch.update(state="working",message="Resuming after completed downloads…",ended=None)
+        STORE.put("batch",bid,batch)
+    threading.Thread(target=convert_batch,args=(bid,),daemon=True,
+                     name="batch-resume-"+bid[:8]).start()
+    return True
+
+
+@app.post("/api/batches/{bid}/resume")
+def resume_paused_batch(bid:str):
+    with mutex:
+        batch=batches.get(bid)
+        if not batch:
+            raise HTTPException(404,"This batch has expired.")
+        if batch.get("stop_requested"):
+            raise HTTPException(409,"This batch was stopped by the user.")
+    resumed=resume_batch_if_space(bid)
+    with mutex:
+        batch=batches[bid]
+        if not resumed and batch["state"] in ("paused","partial","failed"):
+            required=BATCH_MP4_WORKSPACE_MB if batch["format"]=="mp4" else MIN_FREE_MB+200
+            if free_storage_mb()<required:
+                raise HTTPException(409,"Download ready videos to free storage before resuming.")
+        return public_batch(batch)
 
 
 def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
