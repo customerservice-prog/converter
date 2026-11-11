@@ -207,6 +207,49 @@ class BatchTests(unittest.TestCase):
             shutil.rmtree(folder,ignore_errors=True)
             shutil.rmtree(module.MEDIA/failed_id,ignore_errors=True)
 
+    def test_downloading_old_batch_restarts_new_paused_batch(self):
+        import uuid, shutil
+        old_id=uuid.uuid4().hex
+        new_id=uuid.uuid4().hex
+        saved=uuid.uuid4().hex
+        first=uuid.uuid4().hex
+        second=uuid.uuid4().hex
+        now=time.time()
+        folder=module.MEDIA/saved
+        folder.mkdir(parents=True,exist_ok=True)
+        media=folder/"done.mp4"
+        media.write_bytes(b"completed original"+b"x"*10000)
+        module.jobs[saved]={"id":saved,"state":"ready","file":str(media),
+            "title":"Already completed","video_id":V1,"format":"mp4","quality":0,
+            "progress":100,"batch_id":old_id,"created":now}
+        module.batches[old_id]={"id":old_id,"state":"partial","format":"mp4",
+            "quality":0,"job_ids":[saved],"created":now}
+        for jid,vid in ((first,V2),(second,V3)):
+            module.jobs[jid]={"id":jid,"state":"paused","video_id":vid,
+                "format":"mp4","quality":0,"created":now+1,
+                "progress":0,"batch_id":new_id}
+        module.batches[new_id]={"id":new_id,"state":"paused","format":"mp4",
+            "quality":0,"job_ids":[first,second],"created":now+1}
+        try:
+            with patch.object(module,"free_storage_mb",return_value=3000),patch.object(module,"convert",mock_conversion):
+                response=client.get("/api/batches/"+old_id+"/download?max_total_mb=1500")
+                self.assertEqual(response.status_code,200,response.text[:100])
+                with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                    self.assertIsNone(archive.testzip())
+                resumed=wait_batch(new_id)
+                self.assertEqual(resumed["state"],"complete",resumed)
+                self.assertEqual(resumed["succeeded"],2,resumed)
+                self.assertEqual(module.jobs[saved]["state"],"downloaded")
+                self.assertFalse(media.exists())
+        finally:
+            for bid in (old_id,new_id):
+                module.batches.pop(bid,None)
+                module.STORE.drop("batch",bid)
+            for jid in (saved,first,second):
+                module.jobs.pop(jid,None)
+                module.STORE.drop("job",jid)
+                shutil.rmtree(module.MEDIA/jid,ignore_errors=True)
+
     def test_stop_a_paused_batch_without_erasing_finished_video(self):
         import uuid, shutil
         bid=uuid.uuid4().hex
