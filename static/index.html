@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=optional">
   <link rel="stylesheet" href="/assets/site.css?v=20261108-v5">
-  <script defer src="/assets/main.js?v=20261111-batch-recovery-fix"></script>
+  <script defer src="/assets/main.js?v=20261111-streaming-autosave"></script>
 </head>
 <body class="premium-ui">
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="ambient ambient-c" aria-hidden="true"></div>
@@ -90,6 +90,13 @@
               <h3 id="batchStatus" class="batch-title">Preparing your videos…</h3>
               <p id="batchSummary" class="batch-summary">Checking the links</p>
               <div class="progress-track" role="progressbar" aria-label="Batch progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchProgressTrack"><span id="batchProgressFill"></span></div>
+              <div class="autosave-panel" id="autoSavePanel">
+                <div class="autosave-label">SAVE DIRECTLY TO YOUR COMPUTER</div>
+                <p id="autoSaveInfo" class="autosave-info">Choose a folder once. ClipConvert will save each finished video there, release server storage, and continue your batch. Keep this tab open.</p>
+                <button id="autoSaveChoose" type="button" class="autosave-choose">Choose folder &amp; auto-save videos</button>
+                <button id="autoSavePause" type="button" class="fallback-button" hidden>Pause auto-save</button>
+                <p id="autoSaveStatus" class="autosave-status" aria-live="polite">No folder selected. Manual ZIP downloads are still available.</p>
+              </div>
               <div id="batchRows" class="batch-results"></div>
               <p id="batchError" class="form-error" role="alert" hidden></p>
               <a id="batchDownload" class="download-button" href="#" hidden>↓ Download all videos (.zip)</a>
