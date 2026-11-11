@@ -73,6 +73,79 @@ try {
     }
     await page.close();
   }
+  // Simulate the Chromium File System Access API without touching user files.
+  // Verify browser closes a local file BEFORE acknowledging server-side deletion.
+  const page=await browser.newPage({viewport:{width:1366,height:900}});
+  const bid='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const jid='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const receipt='safe-mock-receipt-0123456789abcdefgh';
+  let savedState='ready',acks=0;
+  const payload=Buffer.from('mock mp4 with complete content');
+  await page.addInitScript(()=>{
+    const saved=[];
+    window.__autoSavedTestFiles=saved;
+    const folder=(path)=>({
+      getDirectoryHandle:async name=>folder(path+'/'+name),
+      getFileHandle:async name=>({
+        createWritable:async()=>({
+          buffer:[],
+          write:async function(bytes){this.buffer.push(...bytes)},
+          close:async function(){saved.push({file:path+'/'+name,bytes:this.buffer.length,closed:true})},
+          abort:async function(){saved.push({file:path+'/'+name,aborted:true})}
+        })
+      })
+    });
+    window.showDirectoryPicker=async()=>({name:'TestDownloads',...folder('TestDownloads')});
+    localStorage.setItem('clipconvert-recent-v1',JSON.stringify([{
+      type:'batch',id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',time:Date.now()
+    }]));
+  });
+  await page.route('**/api/batches/**',async route=>{
+    const url=new URL(route.request().url());
+    const path=url.pathname;
+    if(path.endsWith('/autosave/'+jid)){
+      await route.fulfill({status:200,body:payload,headers:{
+        'Content-Type':'video/mp4','Content-Length':String(payload.length),
+        'X-ClipConvert-Receipt':receipt}});
+      return;
+    }
+    if(path.endsWith('/autosaved/'+jid)){
+      assert.equal(route.request().method(),'POST');
+      const info=route.request().postDataJSON();
+      assert.equal(info.token,receipt);
+      acks++;
+      savedState='downloaded';
+      await route.fulfill({status:200,contentType:'application/json',
+        body:JSON.stringify({status:'downloaded',deleted:true})});
+      return;
+    }
+    if(path.endsWith('/'+bid)){
+      const item={id:jid,state:savedState,progress:100,title:'Test Clip',
+        format:'mp4',quality:0,actual_quality:'1080p',
+        download_url:savedState==='ready'?'/api/download/'+jid:null};
+      await route.fulfill({status:200,contentType:'application/json',
+        body:JSON.stringify({id:bid,state:'complete',total:1,processed:1,
+          succeeded:1,failed:0,cancelled:0,paused:0,available:savedState==='ready'?1:0,
+          items:[item],format:'mp4',quality:0,storage_free_mb:2400,
+          workspace_required_mb:1200,download_url:savedState==='ready'?'/api/batches/'+bid+'/download':null})});
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
+  await page.locator('script[src*="20261111-streaming-autosave"]').waitFor({state:'attached',timeout:30000});
+  await page.evaluate((id)=>openSavedConversion('batch',id),bid);
+  await page.locator('#autoSaveChoose').click();
+  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 video(s) saved'),{timeout:20000});
+  const files=await page.evaluate(()=>window.__autoSavedTestFiles);
+  assert.equal(files.length,1,JSON.stringify(files));
+  assert.equal(files[0].bytes,payload.length);
+  assert.equal(files[0].closed,true);
+  assert.equal(acks,1);
+  assert.equal(savedState,'downloaded');
+  await page.close();
+  console.log('BROWSER_AUTOSAVE_STREAM_AND_ACK_PASSED');
+
   console.log('CLIPCONVERT_FIRST_PAINT_AND_MOBILE_PASSED');
 } finally {
   await browser.close();
