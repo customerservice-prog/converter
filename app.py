@@ -109,6 +109,8 @@ def source_url(raw:str)->str:
             if len(parts)!=1 or not re.fullmatch(r"[A-Za-z0-9_-]{4,100}",parts[0]):
                 raise ValueError("Invalid Facebook video share link.")
             return "https://fb.watch/"+parts[0]+"/"
+        if len(parts)==3 and parts[0]=="share" and parts[1] in ("r","v") and re.fullmatch(r"[A-Za-z0-9_-]{4,100}",parts[2]):
+            return "https://www.facebook.com/share/"+parts[1]+"/"+parts[2]+"/"
         found=None
         if len(parts)==2 and parts[0] in ("reel","videos") and parts[1].isdigit():
             found=parts[1]

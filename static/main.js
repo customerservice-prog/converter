@@ -67,6 +67,7 @@ function getId(raw){
     if(!["facebook.com","www.facebook.com","m.facebook.com","web.facebook.com","fb.watch","www.fb.watch"].includes(host))return "";
     if(host==="fb.watch"||host==="www.fb.watch")
       return parts.length===1&&/^[A-Za-z0-9_-]{4,100}$/.test(parts[0])?"facebook:short:"+parts[0]:"";
+    if(parts.length===3&&parts[0]==="share"&&["r","v"].includes(parts[1])&&/^[A-Za-z0-9_-]{4,100}$/.test(parts[2]))return "facebook:share:"+parts[1]+":"+parts[2];
     let id="";
     if(parts.length===2&&["reel","videos"].includes(parts[0]))id=parts[1];
     else if(parts.length===3&&parts[1]==="videos")id=parts[2];

@@ -22,6 +22,10 @@ class ValidationTests(unittest.TestCase):
                      "https://www.facebook.com/video.php?v=1632760975048127"):
             with self.subTest(link=link): self.assertEqual(source_url(link),url)
 
+    def test_facebook_share_reel_url(self):
+        self.assertEqual(source_url("https://www.facebook.com/share/r/1F9Qrxnahp/"),
+                         "https://www.facebook.com/share/r/1F9Qrxnahp/")
+
     def test_facebook_rejects_unsafe_urls(self):
         for link in ("https://facebook.com.evil.test/reel/1234",
                      "http://127.0.0.1/",
