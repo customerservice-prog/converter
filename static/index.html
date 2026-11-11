@@ -20,8 +20,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=optional">
-  <link rel="stylesheet" href="/assets/site.css?v=20261108-v5">
-  <script defer src="/assets/main.js?v=20261111-zip-default-folder-recovery"></script>
+  <link rel="stylesheet" href="/assets/site.css?v=20261111-download-modes">
+  <script defer src="/assets/main.js?v=20261111-one-batch-download-modes"></script>
 </head>
 <body class="premium-ui">
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="ambient ambient-c" aria-hidden="true"></div>
@@ -90,17 +90,30 @@
               <h3 id="batchStatus" class="batch-title">Preparing your videos…</h3>
               <p id="batchSummary" class="batch-summary">Checking the links</p>
               <div class="progress-track" role="progressbar" aria-label="Batch progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchProgressTrack"><span id="batchProgressFill"></span></div>
-              <a id="batchDownload" class="download-button" href="#" hidden>↓ Download ready videos (.zip)</a>
-              <a id="batchOlderDownload" class="download-button" href="#" hidden>↓ Download completed videos from earlier batch</a>
-              <button id="batchOlderOpen" type="button" class="fallback-button" hidden>View earlier batch</button>
-              <p class="batch-note">Standard ZIP download is the default. ZIPs are split into manageable groups, and completed videos can still be downloaded individually below.</p>
-              <div class="autosave-panel" id="autoSavePanel">
-                <div class="autosave-label">OPTIONAL • AUTOMATIC FOLDER SAVING</div>
-                <p id="autoSaveInfo" class="autosave-info">Prefer automatic downloads? Select a folder once to save each finished video directly to your computer. Manual ZIP downloads always remain available.</p>
-                <button id="autoSaveChoose" type="button" class="autosave-choose">Choose folder for optional auto-save</button>
-                <button id="autoSavePause" type="button" class="fallback-button" hidden>Pause auto-save</button>
-                <p id="autoSaveStatus" class="autosave-status" aria-live="polite">Auto-save is off. Use the ZIP button above to download without granting folder access.</p>
+              <p class="batch-identity" id="batchIdentity">Batch: preparing…</p>
+              <div class="download-modes" role="group" aria-label="Choose one download method">
+                <button id="modeAuto" class="download-mode selected" type="button" aria-pressed="true">
+                  <span class="download-mode-title">Automatic downloads <span class="mode-recommended">Recommended</span></span>
+                  <span class="download-mode-detail">Save each finished video to your computer; no huge ZIPs</span>
+                </button>
+                <button id="modeManual" class="download-mode" type="button" aria-pressed="false">
+                  <span class="download-mode-title">Manual ZIP downloads</span>
+                  <span class="download-mode-detail">Download groups yourself when ready</span>
+                </button>
               </div>
+              <p class="download-mode-hint" id="downloadModeHint" aria-live="polite">Automatic downloads are recommended for batches of 71–100 videos. Choose a folder to begin.</p>
+              <div class="autosave-panel" id="autoSavePanel">
+                <p id="autoSaveInfo" class="autosave-info">Choose a folder once. ClipConvert saves videos from this batch only, and frees server space after each confirmed transfer.</p>
+                <button id="autoSaveChoose" type="button" class="autosave-choose">Choose folder and start automatic downloads</button>
+                <button id="autoSavePause" type="button" class="fallback-button" hidden>Pause automatic downloads</button>
+                <p id="autoSaveStatus" class="autosave-status" aria-live="polite">Waiting for you to choose a folder. Existing completed files are safe.</p>
+              </div>
+              <div id="manualDownloadPanel" class="manual-download-panel" hidden>
+                <a id="batchDownload" class="download-button" href="#" hidden>↓ Download ready videos (.zip)</a>
+                <a id="batchOlderDownload" class="download-button" href="#" hidden>↓ Download completed videos from earlier batch</a>
+                <p class="batch-note">One ZIP at a time, up to approximately 1.5 GB. If you change to automatic saving, no ZIP transfer will run at the same time.</p>
+              </div>
+              <button id="batchOlderOpen" type="button" class="fallback-button" hidden>View earlier batch holding completed videos</button>
               <div id="batchRows" class="batch-results"></div>
               <p id="batchError" class="form-error" role="alert" hidden></p>
               <button id="batchStop" type="button" class="fallback-button" hidden>■ Stop batch</button>
