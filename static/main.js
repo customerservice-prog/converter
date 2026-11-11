@@ -299,8 +299,9 @@ function updateBatchPanel(data){
   const pct=data.total?Math.min(100,Math.round(progress/data.total)):0;
   $("batchProgressFill").style.width=pct+"%";
   $("batchProgressTrack").setAttribute("aria-valuenow",String(pct));
-  const storageBlocked=/storage (is )?full|storage full/i.test(data.message||"") ||
+  const hadStorageFailures=/storage (is )?full|storage full/i.test(data.message||"") ||
     items.some(item=>item.state==="error"&&/storage (is )?full|not enough storage/i.test(item.error||""));
+  const storageBlocked=Number(data.storage_free_mb??99999)<200;
   $("batchStatus").textContent=storageBlocked
     ? "Storage full — "+(data.available??data.succeeded)+" videos available for download"
     : terminal
@@ -315,7 +316,9 @@ function updateBatchPanel(data){
   $("batchReset").hidden=!terminal;
   $("batchRetry").hidden=!(terminal && Number(data.failed)>0);
   if(storageBlocked)
-    showError("batchError","Storage is limited. Download the available videos to automatically delete server copies and free space, then retry failed videos.");
+    showError("batchError","Storage is low. Download available videos to free server space automatically. Completed transfers are deleted from ClipConvert.");
+  else if(hadStorageFailures)
+    showError("batchError","Some videos failed when storage was low. Finished downloads are removed from the server automatically; retry failed videos when sufficient space is free.");
   else if(terminal && data.state==="failed")
     showError("batchError","None of the videos could be converted. See individual errors above.");
   else showError("batchError","");
