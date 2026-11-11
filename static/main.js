@@ -132,8 +132,9 @@ async function openSavedConversion(type,id){
   $("convertForm").hidden=true;
   if(type==="batch"){
     $("jobPanel").hidden=true;$("batchPanel").hidden=false;
-    activeBatchId=id;pollBatch(id);
+    activateBatchContext(id);pollBatch(id);
   }else{
+    suspendAutoSaveForNavigation();
     $("batchPanel").hidden=true;$("jobPanel").hidden=false;
     activeJobId=id;poll(id);
   }
@@ -176,6 +177,61 @@ async function refreshHistory(){
 }
 
 let autoSaveDirectory=null;
+let downloadMode="auto";
+const batchDownloadModes=new Map();
+let lastBatchData=null;
+function updateDownloadModeControls(){
+  const automatic=downloadMode==="auto";
+  $("modeAuto").classList.toggle("selected",automatic);
+  $("modeManual").classList.toggle("selected",!automatic);
+  $("modeAuto").setAttribute("aria-pressed",String(automatic));
+  $("modeManual").setAttribute("aria-pressed",String(!automatic));
+  $("modeAuto").disabled=!autoSaveSupported();
+  $("autoSavePanel").hidden=!automatic;
+  $("manualDownloadPanel").hidden=automatic;
+  $("downloadModeHint").textContent=automatic
+    ?(autoSaveDirectory
+      ? "Saving this batch to "+autoSaveDirectory.name+" only. Keep this tab open; the browser must finish each video before server cleanup."
+      : "Recommended for large batches. Choose a folder once to start saving completed videos from this batch only.")
+    :"Manual ZIP mode: download one group at a time. Automatic saving is paused for this batch.";
+  updateAutoSaveControls();
+}
+function changeDownloadMode(nextMode){
+  if(nextMode==="auto" && !autoSaveSupported())return;
+  if(nextMode===downloadMode)return;
+  if(nextMode==="manual"){
+    autoSavePaused=true;
+    if(autoSaveAbort)autoSaveAbort.abort();
+    setAutoSaveStatus("Automatic downloads paused. Completed files remain available.");
+  }else{
+    autoSavePaused=true; // Changing mode never silently starts file access.
+    setAutoSaveStatus(autoSaveDirectory
+      ?"Automatic saving paused. Choose Resume auto-save to continue this batch."
+      :"Choose a folder to begin saving completed videos automatically.");
+  }
+  downloadMode=nextMode;
+  if(activeBatchId)batchDownloadModes.set(activeBatchId,nextMode);
+  updateDownloadModeControls();
+  if(lastBatchData)updateBatchPanel(lastBatchData);
+}
+function activateBatchContext(id){
+  if(activeBatchId!==id){
+    if(autoSaveAbort)autoSaveAbort.abort();
+    autoSavePaused=true; // Do not save an old batch after the user navigates away.
+    autoSaveSavedCount=0;
+  }
+  activeBatchId=id;
+  downloadMode=batchDownloadModes.get(id)||(autoSaveSupported()?"auto":"manual");
+  lastBatchData=null;
+  updateDownloadModeControls();
+  if(autoSaveDirectory) setAutoSaveStatus("Batch "+id.slice(0,8)+" selected. Click Resume auto-save to save this batch, or change folders.");
+}
+function suspendAutoSaveForNavigation(){
+  autoSavePaused=true;
+  if(autoSaveAbort)autoSaveAbort.abort();
+  updateAutoSaveControls();
+}
+
 let autoSavePaused=false;
 let autoSaveBusy=false;
 let autoSaveSavedCount=0;
@@ -655,6 +711,7 @@ async function pollBatch(id){
   }
 }
 function resetBatch(){
+  suspendAutoSaveForNavigation();
   if(batchTimer)clearTimeout(batchTimer);
   batchPollErrors=0;
   $("batchPanel").hidden=true;
@@ -710,7 +767,7 @@ async function submitConversion(e){
         body:JSON.stringify({links:enteredBatchLinks(),format,
           quality:Number($("quality").value),rights_confirmed:true})});
       const data=await jsonOrError(response);
-      activeBatchId=data.id;
+      activateBatchContext(data.id);
       rememberConversion("batch",data.id);
       $("convertForm").hidden=true;
       $("jobPanel").hidden=true;
@@ -732,6 +789,7 @@ async function submitConversion(e){
           quality:Number($("quality").value),rights_confirmed:true})});
     }
     const data=await jsonOrError(response);
+    suspendAutoSaveForNavigation();
     activeJobId=data.id;
     rememberConversion("job",data.id);
     $("convertForm").hidden=true;
@@ -749,6 +807,7 @@ async function submitConversion(e){
   }
 }
 function resetConverter(){
+  suspendAutoSaveForNavigation();
   if(pollTimer)clearTimeout(pollTimer);
   jobPollErrors=0;
   $("convertForm").hidden=false;$("jobPanel").hidden=true;
