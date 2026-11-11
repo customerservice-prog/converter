@@ -165,6 +165,48 @@ class BatchTests(unittest.TestCase):
                 self.assertIsNone(archive.testzip())
             self.assertEqual(client.get("/api/batches/"+bid).json()["available"],0)
 
+    def test_partial_zip_download_frees_space_and_resumes_storage_failure(self):
+        import uuid, shutil
+        bid=uuid.uuid4().hex
+        ready_id=uuid.uuid4().hex
+        failed_id=uuid.uuid4().hex
+        folder=module.MEDIA/ready_id
+        folder.mkdir(parents=True,exist_ok=True)
+        media=folder/"video.mp4"
+        media.write_bytes(b"saved already"+b"x"*4000)
+        now=time.time()
+        module.jobs[ready_id]={"id":ready_id,"state":"ready","file":str(media),
+            "title":"Previously converted","video_id":V1,"format":"mp4","quality":0,
+            "created":now,"progress":100,"batch_id":bid}
+        module.jobs[failed_id]={"id":failed_id,"state":"error",
+            "title":"Storage interrupted","video_id":V2,"format":"mp4","quality":0,
+            "created":now,"progress":0,"batch_id":bid,
+            "error":"Not enough storage to finish the MP4 audio verification."}
+        module.batches[bid]={"id":bid,"state":"partial",
+            "job_ids":[ready_id,failed_id],"format":"mp4","quality":0,
+            "created":now,"ended":now}
+        try:
+            with patch.object(module,"free_storage_mb",return_value=3000),patch.object(module,"convert",mock_conversion):
+                response=client.get("/api/batches/"+bid+"/download?max_total_mb=1500")
+                self.assertEqual(response.status_code,200,response.text[:100])
+                with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                    self.assertIsNone(archive.testzip())
+                    self.assertEqual(len([x for x in archive.namelist() if x.endswith(".mp4")]),1)
+                finished=wait_batch(bid)
+                self.assertEqual(finished["succeeded"],2,finished)
+                self.assertEqual(finished["failed"],0,finished)
+                self.assertEqual(module.jobs[ready_id]["state"],"downloaded")
+                self.assertEqual(module.jobs[failed_id]["state"],"ready")
+        finally:
+            module.batches.pop(bid,None)
+            module.jobs.pop(ready_id,None)
+            module.jobs.pop(failed_id,None)
+            module.STORE.drop("batch",bid)
+            module.STORE.drop("job",ready_id)
+            module.STORE.drop("job",failed_id)
+            shutil.rmtree(folder,ignore_errors=True)
+            shutil.rmtree(module.MEDIA/failed_id,ignore_errors=True)
+
     def test_stop_a_paused_batch_without_erasing_finished_video(self):
         import uuid, shutil
         bid=uuid.uuid4().hex
