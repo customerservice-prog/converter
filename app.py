@@ -682,6 +682,7 @@ def public_batch(batch:dict)->dict:
                 "processed":done,"succeeded":successes,"failed":sum(i["state"]=="error" for i in items),
                 "items":items,"message":batch.get("message",""),
                 "available":available,
+                "storage_free_mb":round(shutil.disk_usage(MEDIA).free/1024/1024),
                 "download_url":None}
         if available:
             result["download_url"]="/api/batches/"+batch["id"]+"/download"
@@ -903,7 +904,8 @@ def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
 
     return StreamingResponse(
         chunks(),media_type="application/zip",
-        headers={"Content-Disposition":f'attachment; filename="{filename}"',
+        headers={"Content-Disposition":("attachment; filename=clipconvert.zip; filename*=UTF-8''"+
+                 __import__("urllib.parse",fromlist=["quote"]).quote(filename)),
                  "Cache-Control":"no-store","X-Content-Type-Options":"nosniff"})
 
 
