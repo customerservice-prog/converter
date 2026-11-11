@@ -127,8 +127,13 @@ def finish_downloads(ids,completed):
             except (OSError,sqlite3.OperationalError):
                 log.warning("Could not persist downloaded job metadata")
     if completed:
+        restarted=False
         for bid in affected_batches:
-            resume_batch_if_space(bid)
+            if resume_batch_if_space(bid):
+                restarted=True
+                break
+        if not restarted:
+            resume_waiting_batch()
 
 def stream_file_after_download(path,filename,media_type,jid):
     reserve_downloads([jid])
@@ -399,6 +404,8 @@ def janitor():
         time.sleep(60)
         try:
             cleanup()
+            if free_storage_mb()>=BATCH_MP4_WORKSPACE_MB:
+                resume_waiting_batch()
             flush_contact_notifications()
         except (OSError, sqlite3.OperationalError):
             log.exception("Storage maintenance deferred until space is available")
@@ -1035,6 +1042,19 @@ def resume_batch_if_space(bid):
     threading.Thread(target=convert_batch,args=(bid,),daemon=True,
                      name="batch-resume-"+bid[:8]).start()
     return True
+
+
+def resume_waiting_batch():
+    """Restart one paused batch when storage is free, avoiding a burst of 4K jobs."""
+    with mutex:
+        candidates=sorted((batch for batch in batches.values()
+                           if batch.get("state")=="paused" and not batch.get("stop_requested")),
+                          key=lambda batch:batch.get("created",0))
+        ids=[batch["id"] for batch in candidates]
+    for bid in ids:
+        if resume_batch_if_space(bid):
+            return True
+    return False
 
 
 @app.post("/api/batches/{bid}/resume")
