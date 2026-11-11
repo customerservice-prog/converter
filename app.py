@@ -35,6 +35,7 @@ MAX_QUEUE_JOBS=max(100,int(os.getenv("MAX_QUEUE_JOBS","128")))
 MIN_FREE_MB=max(100,int(os.getenv("MIN_FREE_MB","200")))
 MAX_BATCH_LINKS=min(100,max(2,int(os.getenv("MAX_BATCH_LINKS","100"))))
 conversion_slots=threading.BoundedSemaphore(MAX_ACTIVE)
+active_processes={}
 transfer_refs=defaultdict(int)
 completed_transfers=set()
 log=logging.getLogger("converter")
@@ -583,7 +584,7 @@ def convert(jid,vid,fmt,quality):
         # preferred public access path is challenged by YouTube.
         info,access_opts=fetch_public_video_info(
             url,opts,fmt,quality,
-            notify=lambda message:change(jid,message=message))
+            notify=lambda message:(require_running(jid),change(jid,message=message)))
         require_running(jid)
         opts.update(access_opts)
         if not info or info.get("is_live") or info.get("live_status") in ("is_live","is_upcoming"):
@@ -849,6 +850,9 @@ def stop_job(jid:str):
         else:
             job["message"]="Stopping conversion…"
         save_job(jid,True)
+        process=active_processes.get(jid)
+        if process and process.poll() is None:
+            process.terminate()
         return public(job)
 
 
@@ -1061,10 +1065,12 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
     source=folder/("source"+extension)
     output=folder/("converted."+fmt)
     try:
+        require_running(jid)
         change(jid,state="working",progress=8,message="Checking uploaded media…")
         probe=subprocess.run(
             ["ffprobe","-v","error","-show_entries","format=duration:stream=codec_type,codec_name,height",
              "-of","json",str(source)],capture_output=True,text=True,timeout=30,check=False)
+        require_running(jid)
         if probe.returncode != 0:
             raise ValueError("The uploaded file is not valid media or cannot be read.")
         try:
@@ -1109,11 +1115,18 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
         error_lines=[]
         with subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
                               text=True,bufsize=1) as process:
+            with mutex:
+                active_processes[jid]=process
+            if is_stopping(jid):
+                process.terminate()
             timer=threading.Timer(timeout,process.kill)
             timer.daemon=True
             timer.start()
             try:
                 for line in process.stdout:
+                    if is_stopping(jid):
+                        process.terminate()
+                        raise ConversionStopped("Stopped by user")
                     line=line.strip()
                     if line.startswith(("out_time_us=","out_time_ms=")):
                         try:
@@ -1129,6 +1142,9 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
                 code=process.wait()
             finally:
                 timer.cancel()
+                with mutex:
+                    active_processes.pop(jid,None)
+        require_running(jid)
         if code!=0 or not output.is_file() or output.stat().st_size<1024:
             log.warning("Local media conversion failed for job %s: %s",jid," | ".join(error_lines)[-1000:])
             raise ValueError("FFmpeg could not convert this file. Check the media or try another format.")
@@ -1136,15 +1152,20 @@ def convert_upload(jid: str, extension: str, name: str, fmt: str, quality: int) 
             raise ValueError("Converted file exceeds the maximum permitted size.")
         audio_meta=ensure_mp4_audio(output) if fmt=="mp4" else {}
         source.unlink(missing_ok=True)
+        require_running(jid)
         change(jid,state="ready",progress=100,message="Ready to download",
                file=str(output),actual_quality=quality_label(output,fmt),
                **audio_meta,ended=time.time())
     except Exception as exc:
+        shutil.rmtree(folder,ignore_errors=True)
+        if is_stopping(jid) or isinstance(exc,ConversionStopped):
+            change(jid,state="cancelled",progress=0,message="Stopped by user",
+                   error=None,ended=time.time())
+            return
         log.warning("Uploaded media conversion %s failed (%s)",jid,type(exc).__name__)
         change(jid,state="error",progress=0,message="Conversion failed",
                error=str(exc) if isinstance(exc,ValueError) else "Could not convert this file.",
                ended=time.time())
-        shutil.rmtree(folder,ignore_errors=True)
 
 
 @app.post("/api/upload",status_code=202)
