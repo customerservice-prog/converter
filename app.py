@@ -947,7 +947,7 @@ def stop_batch(bid:str):
             if not job or job["state"] in ("ready","downloaded","error","cancelled"):
                 continue
             job["cancel_requested"]=True
-            if job["state"]=="queued":
+            if job["state"] in ("queued","paused"):
                 job.update(state="cancelled",progress=0,message="Stopped by user",
                            error=None,ended=time.time())
             else:
