@@ -63,6 +63,80 @@ class BatchTests(unittest.TestCase):
             "format":"mp3","rights_confirmed":True})
         self.assertEqual(r.status_code,422)
 
+    def test_daily_quota_history_cannot_block_new_batches(self):
+        old_key="batch-unlimited-test"
+        module.STORE.put("quota",old_key,[time.time()]*250)
+        try:
+            with patch.object(module,"client_key",return_value=old_key), patch.object(module,"convert",mock_conversion):
+                r=client.post("/api/batches",json={
+                    "links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
+                    "format":"mp3","rights_confirmed":True})
+                self.assertEqual(r.status_code,202,r.text)
+                completed=wait_batch(r.json()["id"])
+                self.assertEqual(completed["state"],"complete")
+        finally:
+            module.STORE.drop("quota",old_key)
+
+    def test_stop_active_batch_preserves_ready_and_cancels_pending(self):
+        import threading, uuid, shutil
+        bid=uuid.uuid4().hex
+        ready_id=uuid.uuid4().hex
+        queued_id=uuid.uuid4().hex
+        folder=module.MEDIA/ready_id
+        folder.mkdir(parents=True,exist_ok=True)
+        media=folder/"video.mp4"
+        media.write_bytes(b"saved video"+b"x"*200)
+        now=time.time()
+        module.jobs[ready_id]={"id":ready_id,"state":"ready","file":str(media),
+            "title":"Preserved video","video_id":V1,"format":"mp4",
+            "quality":0,"progress":100,"created":now,"ended":now,"batch_id":bid}
+        module.jobs[queued_id]={"id":queued_id,"state":"queued",
+            "video_id":V2,"format":"mp4","quality":0,"progress":0,
+            "created":now,"batch_id":bid}
+        module.batches[bid]={"id":bid,"state":"working","job_ids":[ready_id,queued_id],
+            "format":"mp4","quality":0,"created":now}
+        try:
+            r=client.post("/api/batches/"+bid+"/stop")
+            self.assertEqual(r.status_code,200,r.text)
+            self.assertEqual(r.json()["state"],"stopping")
+            self.assertEqual(r.json()["available"],1)
+            self.assertEqual(r.json()["cancelled"],1)
+            self.assertEqual(module.jobs[ready_id]["state"],"ready")
+            self.assertEqual(module.jobs[queued_id]["state"],"cancelled")
+            module.convert_batch(bid)
+            final=client.get("/api/batches/"+bid).json()
+            self.assertEqual(final["state"],"stopped")
+            self.assertEqual(final["available"],1)
+            self.assertEqual(client.post("/api/batches/"+bid+"/stop").status_code,200)
+            zip_response=client.get(final["download_url"])
+            self.assertEqual(zip_response.status_code,200)
+            with zipfile.ZipFile(io.BytesIO(zip_response.content)) as archive:
+                self.assertEqual(len([x for x in archive.namelist() if x.endswith(".mp4")]),1)
+            self.assertEqual(module.jobs[ready_id]["state"],"downloaded")
+        finally:
+            module.batches.pop(bid,None)
+            module.jobs.pop(ready_id,None)
+            module.jobs.pop(queued_id,None)
+            module.STORE.drop("batch",bid)
+            module.STORE.drop("job",ready_id)
+            module.STORE.drop("job",queued_id)
+            shutil.rmtree(folder,ignore_errors=True)
+
+    def test_stop_single_queued_job_is_idempotent(self):
+        import uuid
+        jid=uuid.uuid4().hex
+        module.jobs[jid]={"id":jid,"state":"queued","video_id":V3,
+            "format":"mp3","quality":0,"progress":0,"created":time.time()}
+        try:
+            r=client.post("/api/jobs/"+jid+"/stop")
+            self.assertEqual(r.status_code,200,r.text)
+            self.assertEqual(r.json()["state"],"cancelled")
+            self.assertEqual(client.post("/api/jobs/"+jid+"/stop").json()["state"],"cancelled")
+            self.assertFalse((module.MEDIA/jid).exists())
+        finally:
+            module.jobs.pop(jid,None)
+            module.STORE.drop("job",jid)
+
     def test_two_video_batch_and_combined_zip(self):
         payload={"links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
                  "format":"mp3","quality":0,"rights_confirmed":True}
