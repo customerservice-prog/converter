@@ -51,18 +51,18 @@ const routes={
 function showError(el,message){const node=$(el);node.textContent=message;node.hidden=!message;}
 function getId(raw){
   const text=clean(raw);
-  if(/^[\\w-]{11}$/.test(text))return "youtube:"+text;
+  if(/^[\w-]{11}$/.test(text))return "youtube:"+text;
   try{
     const u=new URL(text);
     if(!["http:","https:"].includes(u.protocol)||u.username||u.password||u.port)return "";
-    const host=u.hostname.toLowerCase().replace(/\\.$/,"");
+    const host=u.hostname.toLowerCase().replace(/\.$/,"");
     const parts=u.pathname.split("/").filter(Boolean);
     if(["youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"].includes(host)){
       let id="";
       if(host==="youtu.be"||host==="www.youtu.be")id=parts.length===1?parts[0]:"";
       else if(parts.length===2&&["shorts","embed","live","v"].includes(parts[0]))id=parts[1];
       else if(["/watch","/watch/"].includes(u.pathname))id=u.searchParams.get("v")||"";
-      return /^[\\w-]{11}$/.test(id)?"youtube:"+id:"";
+      return /^[\w-]{11}$/.test(id)?"youtube:"+id:"";
     }
     if(!["facebook.com","www.facebook.com","m.facebook.com","web.facebook.com","fb.watch","www.fb.watch"].includes(host))return "";
     if(host==="fb.watch"||host==="www.fb.watch")
@@ -71,7 +71,7 @@ function getId(raw){
     if(parts.length===2&&["reel","videos"].includes(parts[0]))id=parts[1];
     else if(parts.length===3&&parts[1]==="videos")id=parts[2];
     else if(["/watch","/watch/","/watch.php","/video.php"].includes(u.pathname))id=u.searchParams.get("v")||"";
-    return /^\\d{1,30}$/.test(id)?"facebook:"+id:"";
+    return /^\d{1,30}$/.test(id)?"facebook:"+id:"";
   }catch{return "";}
 }
 let format="mp3",pollTimer=null,batchTimer=null,sourceType="youtube";
