@@ -17,7 +17,6 @@ from durable import StateStore, database_path
 ROOT=Path(__file__).resolve().parent
 MEDIA=Path(os.getenv("MEDIA_DIR","/tmp/converter-media")); MEDIA.mkdir(parents=True,exist_ok=True)
 MAX_ACTIVE=max(1,int(os.getenv("MAX_ACTIVE_JOBS","2")))
-DAILY_LIMIT=max(100,int(os.getenv("DAILY_LIMIT","120")))
 FILE_LIMIT=max(10,int(os.getenv("MAX_FILE_MB","4096")))*1024*1024
 TTL=max(300,int(os.getenv("FILE_TTL_SECONDS","3600")))
 MAX_UPLOAD_BYTES=max(5,int(os.getenv("MAX_UPLOAD_MB","100")))*1024*1024
@@ -29,7 +28,6 @@ QUALITIES={"mp3":(0,128,192,320),"mp4":(0,360,720,1080,1440,2160)}
 STORE=StateStore(database_path(MEDIA))
 jobs=STORE.load("job")
 batches=STORE.load("batch")
-quota=defaultdict(list,STORE.load("quota"))
 contact_quota=defaultdict(list,STORE.load("contact_quota"))
 mutex=threading.RLock()
 _last_saved={}
@@ -210,11 +208,11 @@ def cleanup():
         for bid in expired_batches:
             batches.pop(bid,None)
             STORE.drop("batch",bid)
-        for bucket in (quota,contact_quota):
+        for bucket in (contact_quota,):
             for ip in list(bucket):
                 old_values=bucket[ip]
                 bucket[ip]=[t for t in old_values if now-t<86400]
-                kind="quota" if bucket is quota else "contact_quota"
+                kind="contact_quota"
                 if not bucket[ip]:
                     bucket.pop(ip,None)
                     STORE.drop(kind,ip)
@@ -754,8 +752,6 @@ def create_batch(payload:BatchRequest,request:Request):
     ip=client_key(request)
     now=time.time()
     with mutex:
-        if len(quota[ip])+len(ids)>DAILY_LIMIT:
-            raise HTTPException(429,"The batch exceeds the remaining daily conversion limit.")
         waiting=sum(j["state"] in ("queued","working","receiving") for j in jobs.values())
         if waiting+len(ids)>MAX_QUEUE_JOBS:
             raise HTTPException(503,"The queue is full. Please try again shortly.")
@@ -769,8 +765,6 @@ def create_batch(payload:BatchRequest,request:Request):
                        "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg",
                        "duration":None,"format":payload.format,"quality":payload.quality,
                        "actual_quality":None,"error":None,"created":now,"batch_id":bid}
-        quota[ip].extend([now]*len(ids))
-        STORE.put("quota",ip,quota[ip])
         for jid in jids:save_job(jid,True)
         batches[bid]={"id":bid,"state":"working","created":now,
                       "message":"Preparing batch…","job_ids":jids,
@@ -958,13 +952,11 @@ def create(payload:ConvertRequest,request:Request):
     with mutex:
         if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_QUEUE_JOBS:
             raise HTTPException(503,"The converter is busy. Please try again.")
-        if len(quota[ip])>=DAILY_LIMIT: raise HTTPException(429,"Daily download limit reached.")
-        quota[ip].append(now); jid=uuid.uuid4().hex
+        jid=uuid.uuid4().hex
         job={"id":jid,"state":"queued","progress":0,"message":"Starting…","title":"YouTube video",
              "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","video_id":vid,"duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
              "error":None,"created":now}
         jobs[jid]=job
-        STORE.put("quota",ip,quota[ip])
         save_job(jid,True)
     threading.Thread(target=run_queued_conversion,args=(jid,vid,payload.format,payload.quality),daemon=True).start()
     return public(job)
@@ -1086,15 +1078,11 @@ async def upload_media(
     with mutex:
         if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_QUEUE_JOBS:
             raise HTTPException(503,"All converters are busy. Please try again.")
-        if len(quota[ip])>=DAILY_LIMIT:
-            raise HTTPException(429,"Daily conversion limit reached.")
         jid=uuid.uuid4().hex
-        quota[ip].append(now)
         jobs[jid]={"id":jid,"state":"receiving","progress":1,
                    "message":"Receiving file…","title":Path(name).stem[:100] or "Uploaded media",
                    "thumbnail":None,"duration":None,"format":format,"quality":quality,"actual_quality":None,
                    "error":None,"created":now,"upload_extension":extension}
-        STORE.put("quota",ip,quota[ip])
         save_job(jid,True)
     folder=MEDIA/jid
     folder.mkdir(mode=0o700,parents=True,exist_ok=True)
