@@ -671,6 +671,12 @@ def run_queued_upload(jid:str,extension:str,name:str,fmt:str,quality:int)->None:
         convert_upload(jid,extension,name,fmt,quality)
 
 
+def free_storage_mb():
+    try:
+        return round(shutil.disk_usage(MEDIA).free/1024/1024)
+    except OSError:
+        return 0
+
 def public_batch(batch:dict)->dict:
     with mutex:
         items=[public(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
@@ -682,7 +688,7 @@ def public_batch(batch:dict)->dict:
                 "processed":done,"succeeded":successes,"failed":sum(i["state"]=="error" for i in items),
                 "items":items,"message":batch.get("message",""),
                 "available":available,
-                "storage_free_mb":round(shutil.disk_usage(MEDIA).free/1024/1024),
+                "storage_free_mb":free_storage_mb(),
                 "download_url":None}
         if available:
             result["download_url"]="/api/batches/"+batch["id"]+"/download"
