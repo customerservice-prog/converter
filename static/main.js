@@ -51,16 +51,27 @@ const routes={
 function showError(el,message){const node=$(el);node.textContent=message;node.hidden=!message;}
 function getId(raw){
   const text=clean(raw);
-  if(/^[\w-]{11}$/.test(text))return text;
+  if(/^[\\w-]{11}$/.test(text))return "youtube:"+text;
   try{
-    const u=new URL(text);const host=u.hostname.toLowerCase();
-    if(!["youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"].includes(host))return "";
+    const u=new URL(text);
+    if(!["http:","https:"].includes(u.protocol)||u.username||u.password||u.port)return "";
+    const host=u.hostname.toLowerCase().replace(/\\.$/,"");
     const parts=u.pathname.split("/").filter(Boolean);
-    let found="";
-    if(host==="youtu.be"||host==="www.youtu.be")found=parts.length===1?parts[0]:"";
-    else if(parts.length===2&&["shorts","embed","live","v"].includes(parts[0]))found=parts[1];
-    else if(parts[0]==="watch")found=u.searchParams.get("v")||"";
-    return /^[\w-]{11}$/.test(found)?found:"";
+    if(["youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"].includes(host)){
+      let id="";
+      if(host==="youtu.be"||host==="www.youtu.be")id=parts.length===1?parts[0]:"";
+      else if(parts.length===2&&["shorts","embed","live","v"].includes(parts[0]))id=parts[1];
+      else if(["/watch","/watch/"].includes(u.pathname))id=u.searchParams.get("v")||"";
+      return /^[\\w-]{11}$/.test(id)?"youtube:"+id:"";
+    }
+    if(!["facebook.com","www.facebook.com","m.facebook.com","web.facebook.com","fb.watch","www.fb.watch"].includes(host))return "";
+    if(host==="fb.watch"||host==="www.fb.watch")
+      return parts.length===1&&/^[A-Za-z0-9_-]{4,100}$/.test(parts[0])?"facebook:short:"+parts[0]:"";
+    let id="";
+    if(parts.length===2&&["reel","videos"].includes(parts[0]))id=parts[1];
+    else if(parts.length===3&&parts[1]==="videos")id=parts[2];
+    else if(["/watch","/watch/","/watch.php","/video.php"].includes(u.pathname))id=u.searchParams.get("v")||"";
+    return /^\\d{1,30}$/.test(id)?"facebook:"+id:"";
   }catch{return "";}
 }
 let format="mp3",pollTimer=null,batchTimer=null,sourceType="youtube";
@@ -597,7 +608,7 @@ function makeBatchRow(item,index){
   const info=document.createElement("div");
   info.className="batch-result-info";
   const title=document.createElement("strong");
-  title.textContent=(index+1)+". "+(item.title||"YouTube video");
+  title.textContent=(index+1)+". "+(item.title||"Video");
   info.appendChild(title);
   const description=document.createElement("span");
   description.textContent=item.state==="cancelled"?"Stopped · not converted"
@@ -745,20 +756,20 @@ async function submitConversion(e){
     return;
   }
   if(sourceType==="youtube" && !getId(clean($("videoUrl").value))){
-    showError("formError","Enter a valid YouTube video URL (including Shorts and share links).");
+    showError("formError","Enter a valid YouTube or Facebook video URL (including Shorts and Reels).");
     return;
   }
   if(sourceType==="batch"){
     const links=enteredBatchLinks();
     const unique=new Set(links.map(getId));
     if(links.length<2||unique.size<2){
-      showError("formError","Paste at least two different YouTube video links, one per line.");return;
+      showError("formError","Paste at least two different YouTube or Facebook video links, one per line.");return;
     }
     if(links.length>100 || unique.size>100){
       showError("formError","You can convert up to 100 different video links per batch.");return;
     }
     if(links.some(link=>!getId(link))){
-      showError("formError","One or more links are invalid. Use YouTube video, Shorts, or share URLs.");return;
+      showError("formError","One or more links are invalid. Use public YouTube videos, Facebook videos, or Reels.");return;
     }
   }
   if(sourceType==="file"){

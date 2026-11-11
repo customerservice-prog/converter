@@ -23,6 +23,7 @@ MAX_UPLOAD_BYTES=max(5,int(os.getenv("MAX_UPLOAD_MB","100")))*1024*1024
 UPLOAD_EXTENSIONS={".mp4",".mov",".m4v",".webm",".mkv",".mp3",".m4a",".wav",".flac",".ogg",".aac"}
 ID=re.compile(r"^[A-Za-z0-9_-]{11}$")
 HOSTS={"youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtube-nocookie.com","www.youtube-nocookie.com","youtu.be","www.youtu.be"}
+FACEBOOK_HOSTS={"facebook.com","www.facebook.com","m.facebook.com","web.facebook.com","fb.watch","www.fb.watch"}
 DURATION_LIMIT={"mp3":14400,"mp4":14400}
 QUALITIES={"mp3":(0,128,192,320),"mp4":(0,360,720,1080,1440,2160)}
 STORE=StateStore(database_path(MEDIA))
@@ -88,6 +89,75 @@ def video_id(raw:str)->str:
         return found
     except ValueError: raise
     except Exception as exc: raise ValueError("Enter a valid YouTube URL.") from exc
+
+def source_url(raw:str)->str:
+    """Canonical whitelisted public video source; reject arbitrary URLs."""
+    raw=(raw or "").strip()
+    if len(raw)>2048: raise ValueError("The link is too long.")
+    if ID.fullmatch(raw): return "https://www.youtube.com/watch?v="+raw
+    try:
+        p=urlparse(raw)
+        host=(p.hostname or "").lower().rstrip(".")
+        if p.scheme not in ("http","https") or p.username or p.password or p.port:
+            raise ValueError("Enter a valid YouTube or Facebook video URL.")
+        if host in HOSTS:
+            return "https://www.youtube.com/watch?v="+video_id(raw)
+        if host not in FACEBOOK_HOSTS:
+            raise ValueError("Only YouTube and Facebook video links are supported.")
+        parts=[part for part in p.path.split("/") if part]
+        if host in ("fb.watch","www.fb.watch"):
+            if len(parts)!=1 or not re.fullmatch(r"[A-Za-z0-9_-]{4,100}",parts[0]):
+                raise ValueError("Invalid Facebook video share link.")
+            return "https://fb.watch/"+parts[0]+"/"
+        found=None
+        if len(parts)==2 and parts[0] in ("reel","videos") and parts[1].isdigit():
+            found=parts[1]
+        elif len(parts)==3 and parts[1]=="videos" and parts[2].isdigit():
+            found=parts[2]
+        elif p.path.rstrip("/") in ("/watch","/watch.php","/video.php"):
+            found=parse_qs(p.query).get("v",[""])[0]
+            if not found.isdigit(): found=None
+        if not found or len(found)>30:
+            raise ValueError("Enter a Facebook Reel or video link, not a profile or feed.")
+        return "https://www.facebook.com/watch/?v="+found
+    except ValueError: raise
+    except Exception as exc:
+        raise ValueError("Enter a valid YouTube or Facebook video URL.") from exc
+
+
+def is_facebook_source(value:str)->bool:
+    return urlparse(value).hostname in ("www.facebook.com","fb.watch")
+
+
+def job_source(job:dict)->str:
+    if job.get("source_url"): return job["source_url"]
+    if job.get("video_id"):
+        value=job["video_id"]
+        return value if str(value).startswith("https://") else "https://www.youtube.com/watch?v="+value
+    return "Uploaded media"
+
+
+def is_youtube_source(value:str)->bool:
+    return not is_facebook_source(value)
+
+
+def fetch_source_info(url:str,opts:dict,fmt:str,quality:int,notify=None):
+    if is_youtube_source(url):
+        return fetch_public_video_info(url,opts,fmt,quality,notify=notify)
+    if notify:notify("Checking available Facebook video formats…")
+    with yt_dlp.YoutubeDL({**opts,**youtube_output_options(fmt,quality)}) as extractor:
+        info=extractor.extract_info(url,download=False)
+    if not info: raise ValueError("No usable public video metadata was returned.")
+    return info,{}
+
+
+def source_thumbnail(vid:str)->str|None:
+    return None if is_facebook_source(vid) else "https://i.ytimg.com/vi/"+video_id(vid)+"/hqdefault.jpg"
+
+
+def source_default_title(vid:str)->str:
+    return "Facebook video" if is_facebook_source(vid) else "YouTube video"
+
 
 def public(job):
     fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","audio_codec","audio_channels","error","cancel_requested")
@@ -630,7 +700,7 @@ def fetch_public_video_info(url:str,opts:dict,fmt:str,quality:int,notify=None)->
 
 def convert(jid,vid,fmt,quality):
     directory=MEDIA/jid; directory.mkdir(mode=0o700,parents=True,exist_ok=True)
-    url="https://www.youtube.com/watch?v="+vid
+    url=vid if str(vid).startswith("https://") else "https://www.youtube.com/watch?v="+vid
     try:
         require_running(jid)
         ensure_disk_space()
@@ -642,7 +712,7 @@ def convert(jid,vid,fmt,quality):
               "outtmpl":str(directory/"%(id)s.%(ext)s"),"restrictfilenames":True}
         # Resolve once, fall back to the other IP family only when the
         # preferred public access path is challenged by YouTube.
-        info,access_opts=fetch_public_video_info(
+        info,access_opts=fetch_source_info(
             url,opts,fmt,quality,
             notify=lambda message:(require_running(jid),change(jid,message=message)))
         require_running(jid)
@@ -654,8 +724,8 @@ def convert(jid,vid,fmt,quality):
             raise ValueError("Video duration could not be verified.")
         if duration>DURATION_LIMIT[fmt]:
             raise ValueError("The maximum "+fmt.upper()+" video length is "+str(DURATION_LIMIT[fmt]//60)+" minutes.")
-        change(jid,title=str(info.get("title") or "YouTube video")[:180],
-               thumbnail="https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg",
+        change(jid,title=str(info.get("title") or source_default_title(url))[:180],
+               thumbnail=(str(info.get("thumbnail") or "")[:2048] if is_facebook_source(url) else source_thumbnail(url)),
                duration=int(duration),progress=10,message="Preparing conversion…")
         def progress(x):
             require_running(jid)
@@ -710,7 +780,7 @@ def convert(jid,vid,fmt,quality):
             return
         log.warning("Job %s failed: %s",jid,type(exc).__name__)
         text=str(exc).lower()
-        if youtube_access_challenge(exc):
+        if is_youtube_source(url) and youtube_access_challenge(exc):
             msg=("YouTube is requiring sign-in verification from this server. "
                  "This link cannot be converted here right now. If you have the media file, "
                  "choose Upload File to convert it instead.")
@@ -761,7 +831,7 @@ def health():
             "youtube_ip_fallback":os.getenv("YOUTUBE_IP_FALLBACK","1")=="1",
             "features":["upload","youtube","thumbnail","best_quality_auto",
                         "organized_folders","parallel_fragments","batch_links",
-                        "aac_mp4_audio","durable_jobs","contact_inbox","retry","browser_autosave"]}
+                        "aac_mp4_audio","durable_jobs","contact_inbox","retry","browser_autosave","facebook_public_videos"]}
 
 
 def run_queued_conversion(jid:str,vid:str,fmt:str,quality:int)->None:
@@ -887,14 +957,14 @@ def create_batch(payload:BatchRequest,request:Request):
         raise HTTPException(400,"Confirm you have permission to download all videos in this batch.")
     if payload.quality not in QUALITIES[payload.format]:
         raise HTTPException(400,"Choose a supported quality.")
-    # Reject invalid inputs atomically and deduplicate identical video IDs.
+    # Reject invalid inputs atomically and deduplicate canonical source URLs.
     ids=[]
     for link in payload.links:
-        try: vid=video_id(link)
+        try: vid=source_url(link)
         except ValueError as exc: raise HTTPException(400,str(exc)) from exc
         if vid not in ids: ids.append(vid)
     if len(ids)<2:
-        raise HTTPException(400,"Add at least two different YouTube videos.")
+        raise HTTPException(400,"Add at least two different videos.")
     cleanup()
     ensure_disk_space()
     ip=client_key(request)
@@ -909,8 +979,8 @@ def create_batch(payload:BatchRequest,request:Request):
             jid=uuid.uuid4().hex
             jids.append(jid)
             jobs[jid]={"id":jid,"state":"queued","progress":0,"message":"Waiting in batch…",
-                       "title":"YouTube video","video_id":vid,
-                       "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg",
+                       "title":source_default_title(vid),"video_id":vid,"source_url":vid,
+                       "thumbnail":source_thumbnail(vid),
                        "duration":None,"format":payload.format,"quality":payload.quality,
                        "actual_quality":None,"error":None,"created":now,"batch_id":bid}
         for jid in jids:save_job(jid,True)
@@ -1277,7 +1347,7 @@ def download_batch(bid:str,max_total_mb:int=0):
     entries=[]
     lines=[f"Batch results: {len(ready)} of {len(items)} videos ready",""]
     for index,job in enumerate(items,1):
-        title=safe_media_name(job.get("title") or "YouTube video")
+        title=safe_media_name(job.get("title") or "Video")
         if job["id"] in chosen and job["state"]=="ready" and job.get("file") and Path(job["file"]).is_file():
             dirname=f"{index:02d} - {title}"
             media=Path(job["file"])
@@ -1285,7 +1355,7 @@ def download_batch(bid:str,max_total_mb:int=0):
             details=(f"Title: {job.get('title') or 'YouTube video'}\n"
                      f"Format: {job['format'].upper()}\n"
                      f"Quality: {job.get('actual_quality') or 'Unknown'}\n"
-                     f"Source: https://www.youtube.com/watch?v={job['video_id']}\n")
+                     f"Source: {job_source(job)}\n")
             entries.append((f"{dirname}/Video Info.txt",details))
             lines.append(f"{index:02d}. OK — {job.get('title') or title}")
         elif job["state"]=="ready":
@@ -1305,7 +1375,7 @@ def download_batch(bid:str,max_total_mb:int=0):
 @app.post("/api/jobs",status_code=202)
 def create(payload:ConvertRequest,request:Request):
     if not payload.rights_confirmed: raise HTTPException(400,"Confirm that you have permission to download this media.")
-    try: vid=video_id(payload.url)
+    try: vid=source_url(payload.url)
     except ValueError as exc: raise HTTPException(400,str(exc)) from exc
     if payload.quality not in QUALITIES[payload.format]: raise HTTPException(400,"Unsupported format quality.")
     cleanup()
@@ -1315,8 +1385,8 @@ def create(payload:ConvertRequest,request:Request):
         if sum(j["state"] in ("receiving","queued","working") for j in jobs.values())>=MAX_QUEUE_JOBS:
             raise HTTPException(503,"The converter is busy. Please try again.")
         jid=uuid.uuid4().hex
-        job={"id":jid,"state":"queued","progress":0,"message":"Starting…","title":"YouTube video",
-             "thumbnail":"https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg","video_id":vid,"duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
+        job={"id":jid,"state":"queued","progress":0,"message":"Starting…","title":source_default_title(vid),
+             "thumbnail":source_thumbnail(vid),"video_id":vid,"source_url":vid,"duration":None,"format":payload.format,"quality":payload.quality,"actual_quality":None,
              "error":None,"created":now}
         jobs[jid]=job
         save_job(jid,True)
@@ -1540,7 +1610,7 @@ def download_folder(jid:str):
         f"Title: {job.get('title') or 'Video'}\n"
         f"Format: {ext.upper()}\n"
         f"Actual quality: {quality}\n"
-        f"Source: {'https://www.youtube.com/watch?v='+vid if vid else 'Uploaded media'}\n"
+        f"Source: {job_source(job)}\n"
         "Created by ClipConvert\n"
     )
     return stream_zip([(f"{folder}/{title}.{ext}",media),
