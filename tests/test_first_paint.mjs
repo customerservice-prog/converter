@@ -77,9 +77,10 @@ try {
   // Verify browser closes a local file BEFORE acknowledging server-side deletion.
   const page=await browser.newPage({viewport:{width:1366,height:900}});
   const bid='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const anotherBid='cccccccccccccccccccccccccccccccc';
   const jid='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
   const receipt='safe-mock-receipt-0123456789abcdefgh';
-  let savedState='ready',acks=0;
+  let savedState='ready',acks=0,streamRequests=0;
   const payload=Buffer.from('mock mp4 with complete content');
   await page.addInitScript(()=>{
     const saved=[];
@@ -104,6 +105,7 @@ try {
     const url=new URL(route.request().url());
     const path=url.pathname;
     if(path.endsWith('/autosave/'+jid)){
+      streamRequests++;
       await route.fulfill({status:200,body:payload,headers:{
         'Content-Type':'video/mp4','Content-Length':String(payload.length),
         'X-ClipConvert-Receipt':receipt}});
@@ -117,6 +119,15 @@ try {
       savedState='downloaded';
       await route.fulfill({status:200,contentType:'application/json',
         body:JSON.stringify({status:'downloaded',deleted:true})});
+      return;
+    }
+    if(path.endsWith('/'+anotherBid)){
+      await route.fulfill({status:200,contentType:'application/json',
+        body:JSON.stringify({id:anotherBid,state:'working',total:71,processed:0,
+          succeeded:0,failed:0,cancelled:0,paused:0,available:0,
+          format:'mp4',quality:0,storage_free_mb:2400,workspace_required_mb:1200,
+          download_url:null,items:[{id:'dddddddddddddddddddddddddddddddd',
+          state:'queued',title:'Other batch queued',progress:0,format:'mp4'}]})});
       return;
     }
     if(path.endsWith('/'+bid)){
@@ -134,12 +145,14 @@ try {
   });
   page.on('pageerror',error=>console.log('AUTOSAVE_PAGE_ERROR',error.message));
   await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
-  await page.locator('script[src*="20261111-zip-default-folder-recovery"]').waitFor({state:'attached',timeout:30000});
+  await page.locator('script[src*="20261111-one-batch-download-modes"]').waitFor({state:'attached',timeout:30000});
   await page.evaluate((id)=>openSavedConversion('batch',id),bid);
+  assert.equal(await page.locator('#modeAuto').getAttribute('aria-pressed'),'true');
+  assert.equal(await page.locator('#batchDownload').isHidden(),true);
   await page.locator('#autoSaveChoose').click();
   try{
     await page.waitForFunction(
-      ()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 video(s) saved'),
+      ()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 saved from batch'),
       null,{timeout:12000});
   }catch(error){
     console.log('AUTOSAVE_DEBUG',JSON.stringify(await page.evaluate(()=>({
@@ -154,11 +167,15 @@ try {
   assert.equal(files[0].closed,true);
   assert.equal(acks,1);
   assert.equal(savedState,'downloaded');
-  // The original one-click ZIP remains available without folder permissions.
+  // Changing to manual ZIP hides auto-save and requires explicit mode selection.
   savedState='ready';
   await page.evaluate((id)=>openSavedConversion('batch',id),bid);
   const zipLink=page.locator('#batchDownload');
+  assert.equal(await zipLink.isHidden(),true);
+  await page.locator('#modeManual').click();
+  assert.equal(await page.locator('#autoSavePanel').isHidden(),true);
   assert.equal(await zipLink.isVisible(),true);
+  assert.equal(await page.locator('.batch-item-download').count(),1);
   assert.equal((await zipLink.getAttribute('href')).includes('max_total_mb=1500'),true);
 
   // A directory selected earlier can disappear or lose permission.
@@ -172,20 +189,32 @@ try {
       }
     });
   });
+  await page.locator('#modeAuto').click();
+  assert.equal(await zipLink.isHidden(),true);
   await page.locator('#autoSaveChoose').click();
   await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('selected download folder was moved'),null,{timeout:12000});
-  assert.equal(await zipLink.isVisible(),true);
+  assert.equal(await zipLink.isHidden(),true);
   assert.equal(acks,1,'Missing browser folder must never acknowledge a server deletion');
   const chooseLabel=await page.locator('#autoSaveChoose').textContent();
-  assert.match(chooseLabel,/Choose folder for optional auto-save/);
+  assert.match(chooseLabel,/Choose folder and start automatic downloads/);
 
   // Picking a new valid folder restores automatic saving without a page reload.
   await page.evaluate(()=>{window.showDirectoryPicker=window.__workingPicker});
   await page.locator('#autoSaveChoose').click();
   // Selecting a replacement folder resets its visible per-folder counter.
-  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 video(s) saved'),null,{timeout:12000});
+  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('1 saved from batch'),null,{timeout:12000});
   assert.equal(acks,2,'Replacement folder should allow a completed save to be acknowledged');
   assert.equal((await page.evaluate(()=>window.__autoSavedTestFiles)).length,2);
+  // Starting another batch must never automatically download earlier ready media.
+  savedState='ready';
+  const previouslyStreamed=streamRequests;
+  await page.evaluate((id)=>openSavedConversion('batch',id),anotherBid);
+  await page.locator('#autoSaveChoose').click();
+  await page.waitForTimeout(1000);
+  assert.equal(streamRequests,previouslyStreamed,
+    'Auto-save must not scan older completed batches when the selected batch has no files');
+  assert.equal(acks,2);
+  assert.match(await page.locator('#batchIdentity').textContent(),/cccccccc/);
   await page.close();
   console.log('BROWSER_AUTOSAVE_STREAM_AND_ACK_PASSED');
   console.log('BROWSER_MISSING_FOLDER_RECOVERY_ZIP_FALLBACK_PASSED');
