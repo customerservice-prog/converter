@@ -150,9 +150,28 @@ def save_job(jid,force=False):
         _last_saved[jid]=now
 
 
+class ConversionStopped(Exception):
+    """A user-requested stop, not a failed conversion."""
+
+
+def is_stopping(jid):
+    with mutex:
+        job=jobs.get(jid)
+        return not job or bool(job.get("cancel_requested")) or job.get("state")=="cancelled"
+
+
+def require_running(jid):
+    if is_stopping(jid):
+        raise ConversionStopped("Conversion stopped by user")
+
+
 def change(jid,**kwargs):
     with mutex:
         if jid in jobs:
+            if jobs[jid].get("cancel_requested") and kwargs.get("state") in ("ready","working"):
+                raise ConversionStopped("Conversion stopped by user")
+            if jobs[jid].get("state")=="cancelled" and kwargs.get("state")!="cancelled":
+                return
             previous=jobs[jid].get("state")
             jobs[jid].update(kwargs)
             current=jobs[jid].get("state")
@@ -507,6 +526,8 @@ def fetch_public_video_info(url:str,opts:dict,fmt:str,quality:int,notify=None)->
     last_error=None
     for address in addresses:
         for clients in profiles:
+            if notify:
+                notify("Checking available video formats…")
             check_opts={**opts,**youtube_output_options(fmt,quality),
                         "source_address":address}
             check_opts.pop("extractor_args",None)
@@ -544,6 +565,7 @@ def convert(jid,vid,fmt,quality):
     directory=MEDIA/jid; directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     url="https://www.youtube.com/watch?v="+vid
     try:
+        require_running(jid)
         ensure_disk_space()
         change(jid,state="working",progress=3,message="Checking video…")
         opts={"source_address":"::" if os.getenv("PREFER_IPV6")=="1" else "0.0.0.0","js_runtimes":{"node":{}},"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,
@@ -555,6 +577,7 @@ def convert(jid,vid,fmt,quality):
         info,access_opts=fetch_public_video_info(
             url,opts,fmt,quality,
             notify=lambda message:change(jid,message=message))
+        require_running(jid)
         opts.update(access_opts)
         if not info or info.get("is_live") or info.get("live_status") in ("is_live","is_upcoming"):
             raise ValueError("Live videos can only be converted after they end.")
@@ -567,6 +590,7 @@ def convert(jid,vid,fmt,quality):
                thumbnail="https://i.ytimg.com/vi/"+vid+"/hqdefault.jpg",
                duration=int(duration),progress=10,message="Preparing conversion…")
         def progress(x):
+            require_running(jid)
             if x.get("status")=="downloading":
                 if shutil.disk_usage(MEDIA).free < MIN_FREE_MB*1024*1024:
                     raise ValueError("Storage full. Your finished videos remain available; retry this video after space is freed.")
@@ -578,6 +602,7 @@ def convert(jid,vid,fmt,quality):
             elif x.get("status")=="finished":
                 change(jid,progress=89,message="Download complete. Preparing media…")
         def postprocess_progress(x):
+            require_running(jid)
             if x.get("status")=="started":
                 change(jid,progress=90,message="Merging video and audio…")
             elif x.get("status")=="finished":
@@ -588,6 +613,7 @@ def convert(jid,vid,fmt,quality):
         # process_info downloads the selected formats without repeating extraction.
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.process_info(info)
+        require_running(jid)
         files=sorted(directory.glob("*."+fmt))
         if not files: raise ValueError("No compatible output is available for this video.")
         if files[0].stat().st_size>FILE_LIMIT: raise ValueError("Converted file is too large.")
@@ -596,12 +622,17 @@ def convert(jid,vid,fmt,quality):
                 files[0].stat().st_size + MIN_FREE_MB*1024*1024):
             raise ValueError("Not enough storage to finish the MP4 audio verification. Retry after freeing storage.")
         audio_meta=ensure_mp4_audio(files[0]) if fmt=="mp4" else {}
+        require_running(jid)
         change(jid,state="ready",progress=100,message="Ready to download",file=str(files[0]),
                actual_quality=quality_label(files[0],fmt),**audio_meta,ended=time.time())
     except Exception as exc:
         # Remove incomplete video files before writing the failure to SQLite.
         # Otherwise a filled media volume also makes job status persistence fail.
         shutil.rmtree(directory,ignore_errors=True)
+        if is_stopping(jid) or isinstance(exc,ConversionStopped):
+            change(jid,state="cancelled",message="Stopped by user",progress=0,
+                   error=None,ended=time.time())
+            return
         log.warning("Job %s failed: %s",jid,type(exc).__name__)
         text=str(exc).lower()
         if youtube_access_challenge(exc):
@@ -661,11 +692,15 @@ def health():
 def run_queued_conversion(jid:str,vid:str,fmt:str,quality:int)->None:
     # Shared slots keep individual and batch jobs within the same CPU limit.
     with conversion_slots:
+        if is_stopping(jid):
+            return
         convert(jid,vid,fmt,quality)
 
 
 def run_queued_upload(jid:str,extension:str,name:str,fmt:str,quality:int)->None:
     with conversion_slots:
+        if is_stopping(jid):
+            return
         convert_upload(jid,extension,name,fmt,quality)
 
 
