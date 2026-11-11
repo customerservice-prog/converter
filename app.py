@@ -205,12 +205,12 @@ def cleanup():
     reclaim_unused_archives()
     now=time.time()
     with mutex:
-        expired=[k for k,j in jobs.items() if j["state"] in ("ready","downloaded","error") and now-j.get("ended",now)>TTL
+        expired=[k for k,j in jobs.items() if j["state"] in ("ready","downloaded","error","cancelled") and now-j.get("ended",now)>TTL
             and not (j.get("batch_id") in batches and (
-                batches[j["batch_id"]].get("state")=="working" or
+                batches[j["batch_id"]].get("state") in ("working","stopping") or
                 now-batches[j["batch_id"]].get("ended",now)<=TTL))]
         expired_batches=[bid for bid,b in batches.items()
-            if b["state"] in ("complete","partial","failed") and now-b.get("ended",now)>TTL]
+            if b["state"] in ("complete","partial","failed","stopped") and now-b.get("ended",now)>TTL]
         # Free expired files FIRST: SQLite writes cannot succeed on a full disk.
         for k in expired:
             shutil.rmtree(MEDIA/k,ignore_errors=True)
@@ -260,6 +260,10 @@ def restore_jobs():
                          message="Download expired",ended=time.time())
                 save_job(jid,True)
             elif j.get("state") in ("working","queued","receiving"):
+                if j.get("cancel_requested"):
+                    j.update(state="cancelled",message="Stopped by user",ended=time.time())
+                    save_job(jid,True)
+                    continue
                 if j.get("state")=="receiving":
                     j.update(state="error",error="Upload was interrupted. Please upload again.",
                              message="Upload interrupted",ended=time.time())
@@ -267,7 +271,10 @@ def restore_jobs():
                 elif not j.get("batch_id"):
                     standalone.append((jid,j))
         for bid,b in batches.items():
-            if b.get("state")=="working":
+            if b.get("stop_requested") or b.get("state")=="stopping":
+                b.update(state="stopped",message="Stopped by user",ended=time.time())
+                STORE.put("batch",bid,b)
+            elif b.get("state")=="working":
                 resume_batches.append(bid)
     for jid,j in standalone:
         vid=j.get("video_id")
@@ -713,12 +720,13 @@ def free_storage_mb():
 def public_batch(batch:dict)->dict:
     with mutex:
         items=[public(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
-        done=sum(i["state"] in ("ready","downloaded","error") for i in items)
+        done=sum(i["state"] in ("ready","downloaded","error","cancelled") for i in items)
         successes=sum(i["state"] in ("ready","downloaded") for i in items)
         available=sum(i["state"]=="ready" for i in items)
         result={"id":batch["id"],"state":batch["state"],"format":batch["format"],
                 "quality":batch["quality"],"total":len(batch["job_ids"]),
                 "processed":done,"succeeded":successes,"failed":sum(i["state"]=="error" for i in items),
+                "cancelled":sum(i["state"]=="cancelled" for i in items),
                 "items":items,"message":batch.get("message",""),
                 "available":available,
                 "storage_free_mb":free_storage_mb(),
@@ -733,13 +741,15 @@ def convert_batch(batch_id:str)->None:
     with mutex:
         batch=batches.get(batch_id)
         if not batch:return
-        batch["state"]="working"
+        if not batch.get("stop_requested"):
+            batch["state"]="working"
         STORE.put("batch",batch_id,batch)
         ids=list(batch["job_ids"])
         fmt=batch["format"]
         quality=batch["quality"]
         pairs=[(jid,jobs[jid]["video_id"]) for jid in ids
-               if jid in jobs and jobs[jid]["state"] not in ("ready","downloaded","error")]
+               if jid in jobs and jobs[jid]["state"] not in ("ready","downloaded","error","cancelled")
+               and not jobs[jid].get("cancel_requested")]
     try:
         with ThreadPoolExecutor(max_workers=min(2,MAX_ACTIVE),thread_name_prefix="clip-batch") as executor:
             futures=[executor.submit(run_queued_conversion,jid,vid,fmt,quality)
@@ -756,15 +766,17 @@ def convert_batch(batch_id:str)->None:
             for jid in ids:
                 item=jobs.get(jid)
                 if item:
-                    if item["state"] not in ("ready","downloaded","error"):
+                    if item["state"] not in ("ready","downloaded","error","cancelled"):
                         item.update(state="error",error="This conversion stopped unexpectedly.",
                                     progress=0,message="Conversion failed")
                     item["ended"]=now
                     save_job(jid,True)
             success=sum(jobs[jid]["state"] in ("ready","downloaded") for jid in ids if jid in jobs)
-            batch["state"]="complete" if success==len(ids) else "partial" if success else "failed"
+            batch["state"]=("stopped" if batch.get("stop_requested") else
+                            "complete" if success==len(ids) else "partial" if success else "failed")
             batch["ended"]=now
-            batch["message"]=f"{success} of {len(ids)} videos converted"
+            batch["message"]=("Stopped by user; completed videos remain downloadable" if batch.get("stop_requested")
+                               else f"{success} of {len(ids)} videos converted")
             STORE.put("batch",batch_id,batch)
 
 
@@ -816,6 +828,54 @@ def get_batch(bid:str):
     with mutex:
         batch=batches.get(bid)
         if not batch: raise HTTPException(404,"This batch has expired or does not exist.")
+        return public_batch(batch)
+
+
+@app.post("/api/jobs/{jid}/stop")
+def stop_job(jid:str):
+    """Cancel queued work immediately and cooperatively interrupt active media."""
+    with mutex:
+        job=jobs.get(jid)
+        if not job:
+            raise HTTPException(404,"This conversion has expired.")
+        if job.get("batch_id"):
+            raise HTTPException(400,"Use Stop batch to cancel a batch.")
+        if job["state"] in ("ready","downloaded","error","cancelled"):
+            return public(job)
+        job["cancel_requested"]=True
+        if job["state"]=="queued":
+            job.update(state="cancelled",progress=0,message="Stopped by user",
+                       error=None,ended=time.time())
+        else:
+            job["message"]="Stopping conversion…"
+        save_job(jid,True)
+        return public(job)
+
+
+@app.post("/api/batches/{bid}/stop")
+def stop_batch(bid:str):
+    """Stop unfinished batch items, leaving ready/downloaded files untouched."""
+    with mutex:
+        batch=batches.get(bid)
+        if not batch:
+            raise HTTPException(404,"This batch has expired.")
+        if batch["state"] in ("complete","partial","failed","stopped"):
+            return public_batch(batch)
+        batch["stop_requested"]=True
+        batch["state"]="stopping"
+        batch["message"]="Stopping unfinished videos…"
+        for jid in batch["job_ids"]:
+            job=jobs.get(jid)
+            if not job or job["state"] in ("ready","downloaded","error","cancelled"):
+                continue
+            job["cancel_requested"]=True
+            if job["state"]=="queued":
+                job.update(state="cancelled",progress=0,message="Stopped by user",
+                           error=None,ended=time.time())
+            else:
+                job["message"]="Stopping conversion…"
+            save_job(jid,True)
+        STORE.put("batch",bid,batch)
         return public_batch(batch)
 
 
