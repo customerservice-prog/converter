@@ -94,14 +94,14 @@ def source_url(raw:str)->str:
     """Canonical whitelisted public video source; reject arbitrary URLs."""
     raw=(raw or "").strip()
     if len(raw)>2048: raise ValueError("The link is too long.")
-    if ID.fullmatch(raw): return "https://www.youtube.com/watch?v="+raw
+    if ID.fullmatch(raw): return raw
     try:
         p=urlparse(raw)
         host=(p.hostname or "").lower().rstrip(".")
         if p.scheme not in ("http","https") or p.username or p.password or p.port:
             raise ValueError("Enter a valid YouTube or Facebook video URL.")
         if host in HOSTS:
-            return "https://www.youtube.com/watch?v="+video_id(raw)
+            return video_id(raw)
         if host not in FACEBOOK_HOSTS:
             raise ValueError("Only YouTube and Facebook video links are supported.")
         parts=[part for part in p.path.split("/") if part]
@@ -130,7 +130,7 @@ def is_facebook_source(value:str)->bool:
 
 
 def job_source(job:dict)->str:
-    if job.get("source_url"): return job["source_url"]
+    if job.get("source_url"):\n        value=job["source_url"]\n        return value if str(value).startswith("https://") else "https://www.youtube.com/watch?v="+value
     if job.get("video_id"):
         value=job["video_id"]
         return value if str(value).startswith("https://") else "https://www.youtube.com/watch?v="+value
