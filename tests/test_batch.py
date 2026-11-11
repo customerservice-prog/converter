@@ -167,6 +167,7 @@ class BatchTests(unittest.TestCase):
         folder.mkdir(mode=0o700,parents=True,exist_ok=True)
         media=folder/"saved.mp4"
         media.write_bytes(b"already converted"+b"x"*400)
+        expected_media=media.read_bytes()
         module.jobs[jid]={
             "id":jid,"state":"ready","file":str(media),"title":"Saved video",
             "format":"mp4","video_id":V1,"quality":0,"progress":100,
@@ -187,7 +188,7 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(archive.status_code,200)
             with zipfile.ZipFile(io.BytesIO(archive.content)) as z:
                 self.assertEqual(len([n for n in z.namelist() if n.endswith(".mp4")]),1)
-                self.assertEqual(z.read([n for n in z.namelist() if n.endswith(".mp4")][0]),media.read_bytes())
+                self.assertEqual(z.read([n for n in z.namelist() if n.endswith(".mp4")][0]),expected_media)
         finally:
             module.batches.pop(bid,None)
             module.jobs.pop(jid,None)
