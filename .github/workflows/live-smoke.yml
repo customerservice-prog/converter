@@ -48,6 +48,16 @@ jobs:
                           time.sleep(3)
                           continue
                       raise
+          def complete_download(path):
+              req=urllib.request.Request(base+path,headers={"User-Agent":"ClipConvertIntegrationTest/1.0"})
+              with urllib.request.urlopen(req,timeout=180) as resp:
+                  first=resp.read(4096)
+                  total=len(first)
+                  while True:
+                      chunk=resp.read(1024*1024)
+                      if not chunk:break
+                      total+=len(chunk)
+                  return resp.status,first,dict(resp.headers),total
           def multipart(fields,filename,content):
               bound="ClipConvertTestBound3f09"
               segments=[]
@@ -90,13 +100,12 @@ jobs:
               if job["state"] in ("ready","error"):break
               time.sleep(1)
           assert job["state"]=="ready",job
-          code,body,headers=request(job["download_url"])
-          assert code==200 and len(body)>4000,(code,len(body))
-          assert "audio/mpeg" in headers["Content-Type"],headers["Content-Type"]
           assert job.get("folder_url"),job
           zcode,zbody,zheaders=request(job["folder_url"])
           assert zcode==200 and zbody.startswith(b"PK"),("Organized folder ZIP invalid",zcode,zbody[:50])
           assert "application/zip" in zheaders["Content-Type"],zheaders["Content-Type"]
+          assert json.loads(request("/api/jobs/"+jid)[1])["state"]=="downloaded"
+          # Completed ZIP transfers intentionally delete the underlying file.
           print("SUCCESS: upload to MP3 + organized folder ZIP works on Railway",flush=True)
           # Release gate: verify the exact requested YouTube link completes as
           # both video and audio, and that both formats can actually be downloaded.
@@ -122,15 +131,17 @@ jobs:
                   assert int(state.get("audio_channels") or 0)>=1,("No decodable audio channels",state)
                   print("MP4_AUDIO_RESULT: AAC VERIFIED",state["audio_channels"],"channels",flush=True)
               print("BEST QUALITY SELECTED:",fmt,state["actual_quality"],flush=True)
-              code,body,headers=request(state["download_url"])
-              assert code==200 and len(body)>10000,("Download unavailable",fmt,code,len(body))
-              assert mime in headers["Content-Type"],("Wrong media type",fmt,headers["Content-Type"])
               if fmt=="mp4":
+                  code,body,headers,total=complete_download(state["download_url"])
+                  assert code==200 and total>10000,("Download unavailable",fmt,code,total)
+                  assert mime in headers["Content-Type"],("Wrong media type",fmt,headers["Content-Type"])
                   assert b"ftyp" in body[:48],("Invalid MP4 signature",body[:48])
-              assert state.get("folder_url"),("Missing folder link",fmt,state)
-              zstatus,zdata,zheaders=request(state["folder_url"])
-              assert zstatus==200 and zdata[:2]==b"PK",("Broken folder download",fmt,zstatus,zdata[:80])
-              print("YOUTUBE_URL_RESULT: WORKING",fmt,"download bytes checked:",len(body),"ZIP OK",flush=True)
+              else:
+                  zstatus,zdata,zheaders=request(state["folder_url"])
+                  assert zstatus==200 and zdata[:2]==b"PK",("Broken folder download",fmt,zstatus,zdata[:80])
+                  total=len(zdata)
+              assert json.loads(request("/api/jobs/"+jid)[1])["state"]=="downloaded"
+              print("YOUTUBE_URL_RESULT: WORKING",fmt,"download bytes checked:",total,flush=True)
           # Verify two different YouTube links become two independently
           # downloadable videos and one ZIP with two named folders.
           sources=["https://youtu.be/NY6acnscmwo","https://youtu.be/aqz-KE-bpKQ"]
@@ -154,8 +165,6 @@ jobs:
           assert len(batch["items"])==2,batch
           for item in batch["items"]:
               assert item["state"]=="ready" and item.get("download_url"),item
-              c,b,h=request(item["download_url"])
-              assert c==200 and len(b)>10000,("Video in batch could not be downloaded",c,len(b))
           import zipfile
           with urllib.request.urlopen(base+batch["download_url"],timeout=90) as response:
               blob=response.read(110_000_001)
@@ -168,6 +177,9 @@ jobs:
               assert len({p.split("/")[0] for p in media})==2,names
               assert "Batch Results.txt" in names,names
               assert all(archive.getinfo(p).compress_type==zipfile.ZIP_STORED for p in media)
+          after=json.loads(request("/api/batches/"+batch_id)[1])
+          assert after["available"]==0 and after["succeeded"]==2,after
+          assert all(item["state"]=="downloaded" for item in after["items"]),after
           print("BATCH_RESULT: TWO VIDEOS, SEPARATE FOLDERS, ONE ZIP WORKING",flush=True)
           print("ALL PRODUCTION CONVERSION CHECKS PASSED",flush=True)
           PY
