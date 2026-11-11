@@ -174,6 +174,48 @@ async function refreshHistory(){
   });
   $("historyList").replaceChildren(...cards);
 }
+let priorRecovery={current:null,checked:0,found:null,checking:false};
+function showPriorRecovery(id){
+  const link=$("batchOlderDownload"),open=$("batchOlderOpen");
+  const prior=priorRecovery.current===id?priorRecovery.found:null;
+  link.hidden=!prior;
+  open.hidden=!prior;
+  if(!prior)return;
+  link.href=prior.url+"?max_total_mb=1500";
+  link.textContent="↓ Download completed videos from earlier batch ("+prior.available+" ready)";
+  open.dataset.batchId=prior.id;
+  open.textContent="View earlier batch";
+}
+function findPriorRecovery(id){
+  if(priorRecovery.current!==id)
+    priorRecovery={current:id,checked:0,found:null,checking:false};
+  showPriorRecovery(id);
+  if(priorRecovery.checking || Date.now()-priorRecovery.checked<20000)return;
+  priorRecovery.checked=Date.now();
+  priorRecovery.checking=true;
+  const candidates=historyEntries().filter(entry=>entry.type==="batch"&&entry.id!==id).slice(0,20);
+  (async()=>{
+    let found=null;
+    for(const entry of candidates){
+      if(activeBatchId!==id)break;
+      try{
+        const response=await fetch("/api/batches/"+encodeURIComponent(entry.id),{cache:"no-store"});
+        if(!response.ok)continue;
+        const status=await response.json();
+        const url=String(status.download_url||"");
+        if(Number(status.available)>0 && /^\/api\/batches\/[a-f0-9]{32}\/download$/.test(url)){
+          found={id:entry.id,url,available:Number(status.available)};
+          break;
+        }
+      }catch{}
+    }
+    if(priorRecovery.current===id){
+      priorRecovery.found=found;
+      priorRecovery.checking=false;
+      if(activeBatchId===id)showPriorRecovery(id);
+    }
+  })();
+}
 async function stopSingle(){
   if(!activeJobId)return;
   $("jobStop").disabled=true;
@@ -310,6 +352,7 @@ function makeBatchRow(item,index){
     :item.state==="downloaded"?"Downloaded · server copy deleted"
     :item.state==="ready"
     ?"Ready · "+(item.actual_quality||"Best available")+(item.audio_codec==="aac"?" · AAC audio verified":"")
+    :item.state==="paused"?"Paused — waiting for server storage to be freed"
     :item.state==="error"?"Failed · "+(item.error||"Unknown error")
     :item.state==="working"?(item.message||"Converting")+" · "+(item.progress||0)+"%"
     :"Queued — waiting for an available conversion slot";
@@ -352,6 +395,12 @@ function updateBatchPanel(data){
   $("batchSummary").textContent=data.processed+" of "+data.total+" completed · "+
     (data.available??data.succeeded)+" ready · "+(data.succeeded-(data.available??data.succeeded))+" downloaded · "+data.failed+" failed · "+(data.paused||0)+" paused · "+(data.cancelled||0)+" stopped";
   $("batchRows").replaceChildren(...items.map(makeBatchRow));
+  const readyCount=Number(data.available??data.succeeded)||0;
+  if(paused && readyCount===0 && storageBlocked)findPriorRecovery(data.id);
+  else{
+    $("batchOlderDownload").hidden=true;
+    $("batchOlderOpen").hidden=true;
+  }
   const releaseSpace=(paused||storageBlocked)&&!!data.download_url;
   $("batchDownload").href=data.download_url
     ?data.download_url+(releaseSpace?"?max_total_mb=1500":""):"#";
@@ -367,8 +416,13 @@ function updateBatchPanel(data){
   $("batchRetry").dataset.action=resumeMode?"resume":"retry";
   $("batchRetry").hidden=!resumeMode && !(terminal && Number(data.failed)>0);
   $("batchRetry").textContent=resumeMode?"↻ Resume remaining videos":"↻ Retry only failed videos";
-  if(paused)
-    showError("batchError","Download the next group of completed videos above. After the ZIP finishes transferring, ClipConvert frees server space and automatically resumes the remaining videos. No finished videos will be deleted before transfer.");
+  $("batchRetry").disabled=paused && storageBlocked;
+  if(paused && storageBlocked)
+    $("batchRetry").textContent="Resume after storage is freed";
+  if(paused && readyCount===0)
+    showError("batchError","This batch has no completed videos yet. Earlier converted files are still using server storage. Download those from the earlier-batch link here or from Conversion History; the new batch will resume when sufficient space is available.");
+  else if(paused)
+    showError("batchError","Download a completed group above to free server storage. The remaining videos will resume when there is enough space. Nothing completed is deleted before its transfer finishes.");
   else if(data.state==="stopped")
     showError("batchError","Only unfinished videos were stopped. Download any completed videos above; they will be deleted from the server after transfer.");
   else if(storageBlocked)
@@ -574,6 +628,10 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("batchUrls").addEventListener("input",updateBatchCount);
   $("batchReset").addEventListener("click",resetBatch);
   $("batchRetry").addEventListener("click",retryBatch);
+  $("batchOlderOpen").addEventListener("click",()=>{
+    const id=$("batchOlderOpen").dataset.batchId;
+    if(id)openSavedConversion("batch",id);
+  });
   $("batchStop").addEventListener("click",stopBatch);
   $("jobStop").addEventListener("click",stopSingle);
   $("retryVideoButton").addEventListener("click",retrySingle);
