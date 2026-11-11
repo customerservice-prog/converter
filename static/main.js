@@ -189,12 +189,12 @@ function setAutoSaveStatus(message){
   $("autoSaveStatus").textContent=message;
 }
 function updateAutoSaveControls(){
-  $("autoSaveChoose").textContent=autoSaveDirectory?"Change automatic download folder":"Choose folder & auto-save videos";
+  $("autoSaveChoose").textContent=autoSaveDirectory?"Change automatic download folder":"Choose folder for optional auto-save";
   $("autoSavePause").hidden=!autoSaveDirectory;
   $("autoSavePause").textContent=autoSavePaused?"Resume auto-save":"Pause auto-save";
   $("autoSaveInfo").textContent=autoSaveDirectory
     ?"Saving to the selected folder while this tab stays open. Files are removed from ClipConvert only after the browser finishes saving them."
-    :"Choose a folder once. Videos will save individually as soon as they finish, freeing server space for the next video. Keep this tab open.";
+    :"Auto-save is optional. The ZIP download above works without selecting a folder. Choose a folder only if you want files saved individually as they finish.";
 }
 async function chooseAutoSaveDirectory(){
   if(!autoSaveSupported()){
@@ -214,6 +214,16 @@ async function chooseAutoSaveDirectory(){
     if(error.name!=="AbortError")
       setAutoSaveStatus("Folder permission was not granted. Nothing was deleted from ClipConvert.");
   }
+}
+function autoSaveFolderUnavailable(error){
+  return Boolean(error && ["NotFoundError","NotAllowedError","SecurityError"].includes(error.name));
+}
+function recoverMissingAutoSaveFolder(error){
+  autoSavePaused=true;
+  autoSaveDirectory=null;
+  if(autoSaveAbort){try{autoSaveAbort.abort()}catch{}}
+  updateAutoSaveControls();
+  setAutoSaveStatus("The selected download folder was moved, removed, or browser permission expired. Select a folder again using the button above. Your completed videos remain on ClipConvert until a successful download. Standard ZIP downloads still work.");
 }
 function safeAutoSaveName(name){
   let cleaned=String(name||"Video")
@@ -342,10 +352,12 @@ async function autoSavePump(){
       }catch(error){
         if(autoSavePaused){
           setAutoSaveStatus("Automatic saving paused. Partial transfers are not confirmed or deleted.");
+        }else if(autoSaveFolderUnavailable(error)){
+          recoverMissingAutoSaveFolder(error);
         }else{
           autoSavePaused=true;
           setAutoSaveStatus((error.message||"Download could not be completed")+
-            " Select Resume auto-save to try again. Server files were kept unless a download was confirmed.");
+            " Choose Resume auto-save to retry or use the standard ZIP button above. Server files were kept unless a download was confirmed.");
           updateAutoSaveControls();
         }
         break;
@@ -584,13 +596,14 @@ function updateBatchPanel(data){
     $("batchOlderDownload").hidden=true;
     $("batchOlderOpen").hidden=true;
   }
-  const releaseSpace=(paused||storageBlocked)&&!!data.download_url;
+  // Keep the original one-click ZIP flow as the primary download method.
+  // Group large batches into ~1.5 GB chunks so no huge archive is buffered.
   $("batchDownload").href=data.download_url
-    ?data.download_url+(releaseSpace?"?max_total_mb=1500":""):"#";
+    ?data.download_url+"?max_total_mb=1500":"#";
   $("batchDownload").hidden=!data.download_url;
-  $("batchDownload").textContent=releaseSpace
-    ?"↓ Download next group to free space (ZIP)"
-    :"↓ Download "+(data.available??data.succeeded)+" videos in one ZIP";
+  $("batchDownload").textContent=storageBlocked
+    ?"↓ Download next group now (ZIP, frees space)"
+    :"↓ Download "+readyCount+" ready video"+(readyCount===1?"":"s")+" (ZIP, one click)";
   $("batchReset").hidden=!terminal;
   $("batchStop").hidden=!(data.state==="working"||data.state==="stopping"||paused);
   $("batchStop").disabled=data.state==="stopping";
@@ -809,6 +822,14 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("youtubeSourceButton").addEventListener("click",()=>setSource("youtube"));
   $("batchSourceButton").addEventListener("click",()=>setSource("batch"));
   $("batchUrls").addEventListener("input",updateBatchCount);
+  $("batchDownload").addEventListener("click",()=>{
+    // Refresh the visible count after the browser completes a ZIP transfer.
+    // The link itself remains the browser's native one-click download.
+    const bid=activeBatchId;
+    if(!bid)return;
+    for(const ms of [5000,20000,60000,120000])
+      setTimeout(()=>{if(activeBatchId===bid)pollBatch(bid)},ms);
+  });
   $("batchReset").addEventListener("click",resetBatch);
   $("batchRetry").addEventListener("click",retryBatch);
   $("batchOlderOpen").addEventListener("click",()=>{
