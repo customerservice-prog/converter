@@ -213,7 +213,8 @@ async function retryBatch(){
   if(!activeBatchId)return;
   $("batchRetry").disabled=true;
   try{
-    const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(activeBatchId)+"/retry",
+    const action=$("batchRetry").dataset.action==="resume"?"resume":"retry";
+    const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(activeBatchId)+"/"+action,
       {method:"POST"}));
     $("batchRetry").hidden=true;showError("batchError","");
     updateBatchPanel(data);pollBatch(activeBatchId);
@@ -327,6 +328,7 @@ function makeBatchRow(item,index){
 }
 function updateBatchPanel(data){
   const terminal=["complete","partial","failed","stopped"].includes(data.state);
+  const paused=data.state==="paused";
   const items=Array.isArray(data.items)?data.items:[];
   const progress=items.reduce((sum,item)=>sum+(
     ["ready","downloaded","error","cancelled"].includes(item.state)?100:Math.max(0,Number(item.progress)||0)),0);
@@ -335,8 +337,10 @@ function updateBatchPanel(data){
   $("batchProgressTrack").setAttribute("aria-valuenow",String(pct));
   const hadStorageFailures=/storage (is )?full|storage full/i.test(data.message||"") ||
     items.some(item=>item.state==="error"&&/storage (is )?full|not enough storage/i.test(item.error||""));
-  const storageBlocked=Number(data.storage_free_mb??99999)<200;
-  $("batchStatus").textContent=data.state==="stopped"
+  const storageBlocked=Number(data.storage_free_mb??99999)<Number(data.workspace_required_mb??1200);
+  $("batchStatus").textContent=paused
+    ? "Storage almost full — batch paused safely"
+    : data.state==="stopped"
     ? "Batch stopped — completed videos are safe"
     : data.state==="stopping"
       ? "Stopping unfinished videos…"
@@ -346,17 +350,26 @@ function updateBatchPanel(data){
       ? (data.failed?"Batch finished — "+data.failed+" failed":"All videos are ready!")
       : "Converting "+data.total+" videos…";
   $("batchSummary").textContent=data.processed+" of "+data.total+" completed · "+
-    (data.available??data.succeeded)+" ready · "+(data.succeeded-(data.available??data.succeeded))+" downloaded · "+data.failed+" failed · "+(data.cancelled||0)+" stopped";
+    (data.available??data.succeeded)+" ready · "+(data.succeeded-(data.available??data.succeeded))+" downloaded · "+data.failed+" failed · "+(data.paused||0)+" paused · "+(data.cancelled||0)+" stopped";
   $("batchRows").replaceChildren(...items.map(makeBatchRow));
-  $("batchDownload").href=data.download_url||"#";
+  const releaseSpace=(paused||storageBlocked)&&!!data.download_url;
+  $("batchDownload").href=data.download_url
+    ?data.download_url+(releaseSpace?"?max_total_mb=1500":""):"#";
   $("batchDownload").hidden=!data.download_url;
-  $("batchDownload").textContent="↓ Download "+(data.available??data.succeeded)+" videos in one ZIP";
+  $("batchDownload").textContent=releaseSpace
+    ?"↓ Download next group to free space (ZIP)"
+    :"↓ Download "+(data.available??data.succeeded)+" videos in one ZIP";
   $("batchReset").hidden=!terminal;
-  $("batchStop").hidden=!(data.state==="working"||data.state==="stopping");
+  $("batchStop").hidden=!(data.state==="working"||data.state==="stopping"||paused);
   $("batchStop").disabled=data.state==="stopping";
   $("batchStop").textContent=data.state==="stopping"?"Stopping…":"■ Stop batch";
-  $("batchRetry").hidden=!(terminal && Number(data.failed)>0);
-  if(data.state==="stopped")
+  const resumeMode=paused || ((data.state==="partial"||data.state==="failed")&&hadStorageFailures);
+  $("batchRetry").dataset.action=resumeMode?"resume":"retry";
+  $("batchRetry").hidden=!resumeMode && !(terminal && Number(data.failed)>0);
+  $("batchRetry").textContent=resumeMode?"↻ Resume remaining videos":"↻ Retry only failed videos";
+  if(paused)
+    showError("batchError","Download the next group of completed videos above. After the ZIP finishes transferring, ClipConvert frees server space and automatically resumes the remaining videos. No finished videos will be deleted before transfer.");
+  else if(data.state==="stopped")
     showError("batchError","Only unfinished videos were stopped. Download any completed videos above; they will be deleted from the server after transfer.");
   else if(storageBlocked)
     showError("batchError","Storage is low. Download available videos to free server space automatically. Completed transfers are deleted from ClipConvert.");
@@ -371,7 +384,7 @@ async function pollBatch(id){
     const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(id),{cache:"no-store"}));
     batchPollErrors=0;
     updateBatchPanel(data);
-    if(data.state==="working"||data.state==="stopping")batchTimer=setTimeout(()=>pollBatch(id),1500);
+    if(data.state==="working"||data.state==="stopping"||data.state==="paused")batchTimer=setTimeout(()=>pollBatch(id),data.state==="paused"?3500:1500);
   }catch(error){
     if(error.status===404){
       showError("batchError","This batch has expired. Start another batch.");
