@@ -130,7 +130,9 @@ def is_facebook_source(value:str)->bool:
 
 
 def job_source(job:dict)->str:
-    if job.get("source_url"):\n        value=job["source_url"]\n        return value if str(value).startswith("https://") else "https://www.youtube.com/watch?v="+value
+    if job.get("source_url"):
+        value=job["source_url"]
+        return value if str(value).startswith("https://") else "https://www.youtube.com/watch?v="+value
     if job.get("video_id"):
         value=job["video_id"]
         return value if str(value).startswith("https://") else "https://www.youtube.com/watch?v="+value
