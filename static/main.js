@@ -272,7 +272,8 @@ function makeBatchRow(item,index){
   title.textContent=(index+1)+". "+(item.title||"YouTube video");
   info.appendChild(title);
   const description=document.createElement("span");
-  description.textContent=item.state==="ready"
+  description.textContent=item.state==="downloaded"?"Downloaded · server copy deleted"
+    :item.state==="ready"
     ?"Ready · "+(item.actual_quality||"Best available")+(item.audio_codec==="aac"?" · AAC audio verified":"")
     :item.state==="error"?"Failed · "+(item.error||"Unknown error")
     :item.state==="working"?(item.message||"Converting")+" · "+(item.progress||0)+"%"
@@ -294,27 +295,27 @@ function updateBatchPanel(data){
   const terminal=["complete","partial","failed"].includes(data.state);
   const items=Array.isArray(data.items)?data.items:[];
   const progress=items.reduce((sum,item)=>sum+(
-    item.state==="ready"||item.state==="error"?100:Math.max(0,Number(item.progress)||0)),0);
+    ["ready","downloaded","error"].includes(item.state)?100:Math.max(0,Number(item.progress)||0)),0);
   const pct=data.total?Math.min(100,Math.round(progress/data.total)):0;
   $("batchProgressFill").style.width=pct+"%";
   $("batchProgressTrack").setAttribute("aria-valuenow",String(pct));
   const storageBlocked=/storage (is )?full|storage full/i.test(data.message||"") ||
     items.some(item=>item.state==="error"&&/storage (is )?full|not enough storage/i.test(item.error||""));
   $("batchStatus").textContent=storageBlocked
-    ? "Storage full — "+data.succeeded+" videos are saved"
+    ? "Storage full — "+(data.available??data.succeeded)+" videos available for download"
     : terminal
       ? (data.failed?"Batch finished — "+data.failed+" failed":"All videos are ready!")
       : "Converting "+data.total+" videos…";
   $("batchSummary").textContent=data.processed+" of "+data.total+" completed · "+
-    data.succeeded+" ready · "+data.failed+" failed";
+    (data.available??data.succeeded)+" ready · "+(data.succeeded-(data.available??data.succeeded))+" downloaded · "+data.failed+" failed";
   $("batchRows").replaceChildren(...items.map(makeBatchRow));
   $("batchDownload").href=data.download_url||"#";
   $("batchDownload").hidden=!data.download_url;
-  $("batchDownload").textContent="↓ Download "+data.succeeded+" videos in one ZIP";
+  $("batchDownload").textContent="↓ Download "+(data.available??data.succeeded)+" videos in one ZIP";
   $("batchReset").hidden=!terminal;
   $("batchRetry").hidden=!(terminal && Number(data.failed)>0);
   if(storageBlocked)
-    showError("batchError","ClipConvert storage is full. Download the completed videos now. The remaining videos can be retried once storage is available.");
+    showError("batchError","Storage is limited. Download the available videos to automatically delete server copies and free space, then retry failed videos.");
   else if(terminal && data.state==="failed")
     showError("batchError","None of the videos could be converted. See individual errors above.");
   else showError("batchError","");
