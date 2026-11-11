@@ -741,7 +741,7 @@ def health():
             "youtube_ip_fallback":os.getenv("YOUTUBE_IP_FALLBACK","1")=="1",
             "features":["upload","youtube","thumbnail","best_quality_auto",
                         "organized_folders","parallel_fragments","batch_links",
-                        "aac_mp4_audio","durable_jobs","contact_inbox","retry"]}
+                        "aac_mp4_audio","durable_jobs","contact_inbox","retry","browser_autosave"]}
 
 
 def run_queued_conversion(jid:str,vid:str,fmt:str,quality:int)->None:
@@ -1147,6 +1147,78 @@ def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
         headers={"Content-Disposition":("attachment; filename=clipconvert.zip; filename*=UTF-8''"+
                  __import__("urllib.parse",fromlist=["quote"]).quote(filename)),
                  "Cache-Control":"no-store","X-Content-Type-Options":"nosniff"})
+
+
+@app.get("/api/batches/{bid}/autosave/{jid}")
+def stream_batch_autosave(bid:str,jid:str):
+    """Stream to a user-selected browser folder without deleting files yet.
+
+    Browser calls autosaved after its writable file handle is successfully
+    closed. Stream EOF alone is insufficient evidence that the browser saved it.
+    """
+    with mutex:
+        batch=batches.get(bid)
+        job=jobs.get(jid)
+        if not batch or not job or jid not in batch["job_ids"] or job["state"]!="ready":
+            raise HTTPException(404,"This video is no longer available for automatic saving.")
+        media=Path(job["file"])
+        token=secrets.token_urlsafe(32)
+        reserve_downloads([jid])
+    if not media.is_file():
+        finish_downloads([jid],False)
+        raise HTTPException(404,"The completed video is no longer on the server.")
+    def chunks():
+        completed=False
+        try:
+            with media.open("rb") as source:
+                while True:
+                    data=source.read(1024*1024)
+                    if not data:
+                        completed=True
+                        break
+                    yield data
+        finally:
+            if completed:
+                with mutex:
+                    current=jobs.get(jid)
+                    if current and current["state"]=="ready":
+                        current["auto_stream_token"]=token
+                        current["auto_streamed_at"]=time.time()
+                        try:save_job(jid,True)
+                        except (OSError,sqlite3.OperationalError):
+                            log.warning("Could not persist completed auto-save transfer")
+            finish_downloads([jid],False)
+    return StreamingResponse(chunks(),
+        media_type="audio/mpeg" if job["format"]=="mp3" else "video/mp4",
+        headers={"Content-Length":str(media.stat().st_size),
+                 "X-ClipConvert-Receipt":token,"Cache-Control":"no-store",
+                 "X-Content-Type-Options":"nosniff"})
+
+
+class SaveReceipt(BaseModel):
+    token:str=Field(min_length=30,max_length=128)
+
+
+@app.post("/api/batches/{bid}/autosaved/{jid}")
+def confirm_browser_saved(bid:str,jid:str,receipt:SaveReceipt):
+    """Only delete after the browser explicitly confirms its file is closed."""
+    with mutex:
+        batch=batches.get(bid)
+        job=jobs.get(jid)
+        if not batch or not job or jid not in batch["job_ids"]:
+            raise HTTPException(404,"This batch video is not available.")
+        if job["state"]=="downloaded":
+            return {"status":"downloaded","deleted":True}
+        if (job["state"]!="ready" or
+            not hmac.compare_digest(str(job.get("auto_stream_token") or ""),receipt.token)):
+            raise HTTPException(409,"The transfer has not been confirmed. Server copy was retained.")
+        job.pop("auto_stream_token",None)
+        job.pop("auto_streamed_at",None)
+    finish_downloads([jid],True)
+    with mutex:
+        current=jobs.get(jid)
+        return {"status":current["state"] if current else "expired",
+                "deleted":bool(current and current["state"]=="downloaded")}
 
 
 @app.get("/api/batches/{bid}/download")
