@@ -430,7 +430,7 @@ let priorRecovery={current:null,checked:0,found:null,checking:false};
 function showPriorRecovery(id){
   const link=$("batchOlderDownload"),open=$("batchOlderOpen");
   const prior=priorRecovery.current===id?priorRecovery.found:null;
-  link.hidden=!prior;
+  link.hidden=!prior || downloadMode!=="manual";
   open.hidden=!prior;
   if(!prior)return;
   link.href=prior.url+"?max_total_mb=1500";
@@ -611,7 +611,7 @@ function makeBatchRow(item,index){
   description.className=item.state==="error"?"batch-result-error":"";
   info.appendChild(description);
   row.appendChild(info);
-  if(item.state==="ready" && item.download_url){
+  if(downloadMode==="manual" && item.state==="ready" && item.download_url){
     const link=document.createElement("a");
     link.href=item.folder_url||item.download_url;
     link.textContent="↓ Folder";
@@ -622,6 +622,11 @@ function makeBatchRow(item,index){
   return row;
 }
 function updateBatchPanel(data){
+  if(activeBatchId && data.id!==activeBatchId)return;
+  lastBatchData=data;
+  $("batchIdentity").textContent="Current batch: "+data.id.slice(0,8)+" · "+data.total+
+    " videos · "+data.format.toUpperCase();
+  updateDownloadModeControls();
   const terminal=["complete","partial","failed","stopped"].includes(data.state);
   const paused=data.state==="paused";
   const items=Array.isArray(data.items)?data.items:[];
@@ -657,14 +662,16 @@ function updateBatchPanel(data){
   // Group large batches into ~1.5 GB chunks so no huge archive is buffered.
   $("batchDownload").href=data.download_url
     ?data.download_url+"?max_total_mb=1500":"#";
-  $("batchDownload").hidden=!data.download_url;
+  $("batchDownload").hidden=!data.download_url || downloadMode!=="manual";
+  $("batchDownload").setAttribute("aria-disabled",String(autoSaveBusy));
+  $("batchDownload").style.opacity=autoSaveBusy?".48":"1";
   $("batchDownload").textContent=storageBlocked
     ?"↓ Download next group now (ZIP, frees space)"
     :"↓ Download "+readyCount+" ready video"+(readyCount===1?"":"s")+" (ZIP, one click)";
   $("batchReset").hidden=!terminal;
   $("batchStop").hidden=!(data.state==="working"||data.state==="stopping"||paused);
   $("batchStop").disabled=data.state==="stopping";
-  $("batchStop").textContent=data.state==="stopping"?"Stopping…":"■ Stop batch";
+  $("batchStop").textContent=data.state==="stopping"?"Stopping…":"■ Stop conversions (keep completed videos)";
   const resumeMode=paused || ((data.state==="partial"||data.state==="failed")&&hadStorageFailures);
   $("batchRetry").dataset.action=resumeMode?"resume":"retry";
   $("batchRetry").hidden=!resumeMode && !(terminal && Number(data.failed)>0);
@@ -673,9 +680,11 @@ function updateBatchPanel(data){
   if(paused && storageBlocked)
     $("batchRetry").textContent="Resume after storage is freed";
   if(paused && readyCount===0)
-    showError("batchError","This batch has no completed videos yet. Earlier converted files are still using server storage. Download those from the earlier-batch link here or from Conversion History; the new batch will resume when sufficient space is available.");
+    showError("batchError","This batch has no completed videos to save yet. Open the earlier batch from Conversion History if it holds finished videos, and select its download mode. The current batch can resume when storage is free.");
   else if(paused)
-    showError("batchError","Download a completed group above to free server storage. The remaining videos will resume when there is enough space. Nothing completed is deleted before its transfer finishes.");
+    showError("batchError",downloadMode==="auto"
+      ?"Storage pause: choose a folder or resume automatic saving for this batch to free space. Keep this tab open."
+      :"Storage pause: download a ZIP group above to free space, then resume the remaining conversions.");
   else if(data.state==="stopped")
     showError("batchError","Only unfinished videos were stopped. Download any completed videos above; they will be deleted from the server after transfer.");
   else if(storageBlocked)
@@ -687,9 +696,11 @@ function updateBatchPanel(data){
   else showError("batchError","");
 }
 async function pollBatch(id){
+  if(activeBatchId!==id)return;
   try{
     const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(id),{cache:"no-store"}));
     batchPollErrors=0;
+    if(activeBatchId!==id)return;
     updateBatchPanel(data);
     if(data.state==="working"||data.state==="stopping"||data.state==="paused")batchTimer=setTimeout(()=>pollBatch(id),data.state==="paused"?3500:1500);
   }catch(error){
@@ -882,7 +893,12 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("youtubeSourceButton").addEventListener("click",()=>setSource("youtube"));
   $("batchSourceButton").addEventListener("click",()=>setSource("batch"));
   $("batchUrls").addEventListener("input",updateBatchCount);
-  $("batchDownload").addEventListener("click",()=>{
+  $("batchDownload").addEventListener("click",e=>{
+    if(downloadMode!=="manual" || autoSaveBusy){
+      e.preventDefault();
+      setAutoSaveStatus("Finish or pause the current automatic transfer before starting a ZIP download.");
+      return;
+    }
     // Refresh the visible count after the browser completes a ZIP transfer.
     // The link itself remains the browser's native one-click download.
     const bid=activeBatchId;
@@ -896,6 +912,8 @@ document.addEventListener("DOMContentLoaded",()=>{
     const id=$("batchOlderOpen").dataset.batchId;
     if(id)openSavedConversion("batch",id);
   });
+  $("modeAuto").addEventListener("click",()=>changeDownloadMode("auto"));
+  $("modeManual").addEventListener("click",()=>changeDownloadMode("manual"));
   $("autoSaveChoose").addEventListener("click",chooseAutoSaveDirectory);
   $("autoSavePause").addEventListener("click",()=>{
     autoSavePaused=!autoSavePaused;
@@ -904,14 +922,14 @@ document.addEventListener("DOMContentLoaded",()=>{
     setAutoSaveStatus(autoSavePaused
       ?"Auto-save paused. Incomplete transfers will remain on the server."
       :"Auto-save resumed. Looking for completed videos…");
-    if(!autoSavePaused)void autoSavePump();
+    if(!autoSavePaused && downloadMode==="auto")void autoSavePump();
   });
   if(!autoSaveSupported()){
     $("autoSaveChoose").disabled=true;
     setAutoSaveStatus("Automatic folder saving requires Chrome or Edge on desktop; use the manual download links here.");
   }
-  updateAutoSaveControls();
-  window.setInterval(()=>{if(autoSaveDirectory&&!autoSavePaused)void autoSavePump()},4000);
+  updateDownloadModeControls();
+  window.setInterval(()=>{if(autoSaveDirectory&&!autoSavePaused&&downloadMode==="auto")void autoSavePump()},4000);
   $("batchStop").addEventListener("click",stopBatch);
   $("jobStop").addEventListener("click",stopSingle);
   $("retryVideoButton").addEventListener("click",retrySingle);
