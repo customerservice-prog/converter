@@ -217,7 +217,7 @@ async function chooseAutoSaveDirectory(){
 }
 function safeAutoSaveName(name){
   let cleaned=String(name||"Video")
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g,"_").replace(/\s+/g," ").trim()
+    .replace(/[<>:"\\|?*\x00-\x1f]/g,"_").replaceAll("/","_").replace(/\s+/g," ").trim()
     .replace(/[. ]+$/g,"").slice(0,75);
   if(!cleaned || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned))
     cleaned="Video "+cleaned;
