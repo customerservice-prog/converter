@@ -103,6 +103,23 @@ def public(job):
         data["folder_url"]="/api/download/"+job["id"]+"/folder"
     return data
 
+# A batch may stream in automatic OR manual mode, never both at once.
+# This prevents a simultaneous ZIP and local-folder save from racing to
+# delete the same finished media (including from two open browser tabs).
+active_batch_transfers={}
+
+def begin_batch_transfer(bid,mode):
+    with mutex:
+        current=active_batch_transfers.get(bid)
+        if current:
+            raise HTTPException(409,
+                "Another download from this batch is still transferring. Finish or stop it before switching download modes.")
+        active_batch_transfers[bid]=mode
+
+def end_batch_transfer(bid):
+    with mutex:
+        active_batch_transfers.pop(bid,None)
+
 def reserve_downloads(ids):
     with mutex:
         for jid in set(ids):transfer_refs[jid]+=1
@@ -135,7 +152,8 @@ def finish_downloads(ids,completed):
         if not restarted:
             resume_waiting_batch()
 
-def stream_file_after_download(path,filename,media_type,jid):
+def stream_file_after_download(path,filename,media_type,jid,batch_id=None):
+    if batch_id:begin_batch_transfer(batch_id,"manual")
     reserve_downloads([jid])
     def content():
         complete=False
@@ -148,7 +166,9 @@ def stream_file_after_download(path,filename,media_type,jid):
                         break
                     yield part
         finally:
-            finish_downloads([jid],complete)
+            try:finish_downloads([jid],complete)
+            finally:
+                if batch_id:end_batch_transfer(batch_id)
     return StreamingResponse(content(),media_type=media_type,
         headers={"Content-Disposition":'attachment; filename="'+filename+'"',
                  "Cache-Control":"no-store"})
@@ -1075,13 +1095,14 @@ def resume_paused_batch(bid:str):
         return public_batch(batch)
 
 
-def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
+def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None,batch_id=None):
     """Create an ordinary ZIP directly over HTTP; never duplicate media on disk.
 
     ZipFile supports unseekable sinks. The bounded queue gives backpressure so
     large batches use constant RAM, and disconnects stop the producer.
     """
     job_ids=list(job_ids or [])
+    if batch_id:begin_batch_transfer(batch_id,"manual")
     if job_ids:reserve_downloads(job_ids)
     def chunks():
         success=False
@@ -1140,7 +1161,10 @@ def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
                 yield part
         finally:
             closed.set()
-            if job_ids:finish_downloads(job_ids,success)
+            try:
+                if job_ids:finish_downloads(job_ids,success)
+            finally:
+                if batch_id:end_batch_transfer(batch_id)
 
     return StreamingResponse(
         chunks(),media_type="application/zip",
@@ -1163,9 +1187,11 @@ def stream_batch_autosave(bid:str,jid:str):
             raise HTTPException(404,"This video is no longer available for automatic saving.")
         media=Path(job["file"])
         token=secrets.token_urlsafe(32)
+        begin_batch_transfer(bid,"auto")
         reserve_downloads([jid])
     if not media.is_file():
-        finish_downloads([jid],False)
+        try:finish_downloads([jid],False)
+        finally:end_batch_transfer(bid)
         raise HTTPException(404,"The completed video is no longer on the server.")
     def chunks():
         completed=False
@@ -1187,7 +1213,8 @@ def stream_batch_autosave(bid:str,jid:str):
                         try:save_job(jid,True)
                         except (OSError,sqlite3.OperationalError):
                             log.warning("Could not persist completed auto-save transfer")
-            finish_downloads([jid],False)
+            try:finish_downloads([jid],False)
+            finally:end_batch_transfer(bid)
     return StreamingResponse(chunks(),
         media_type="audio/mpeg" if job["format"]=="mp3" else "video/mp4",
         headers={"Content-Length":str(media.stat().st_size),
@@ -1272,7 +1299,7 @@ def download_batch(bid:str,max_total_mb:int=0):
     entries.append(("Batch Results.txt","\n".join(lines)+"\n"))
     suffix="-part" if max_total_mb else "-all-videos"
     return stream_zip(entries,"ClipConvert-"+bid[:8]+suffix+".zip",
-                      [j["id"] for j in ready])
+                      [j["id"] for j in ready],batch_id=bid)
 
 
 @app.post("/api/jobs",status_code=202)
@@ -1482,7 +1509,8 @@ def download(jid:str):
         name=(re.sub(r"[^a-zA-Z0-9._ -]","",title).strip()[:90] or "download")+"."+job["format"]
     if not file.is_file(): raise HTTPException(404,"The file is no longer available.")
     return stream_file_after_download(file,name,
-        "audio/mpeg" if job["format"]=="mp3" else "video/mp4",jid)
+        "audio/mpeg" if job["format"]=="mp3" else "video/mp4",jid,
+        batch_id=job.get("batch_id"))
 
 
 def safe_media_name(value:str)->str:
@@ -1516,7 +1544,8 @@ def download_folder(jid:str):
         "Created by ClipConvert\n"
     )
     return stream_zip([(f"{folder}/{title}.{ext}",media),
-                       (f"{folder}/Video Info.txt",details)],folder+".zip",[jid])
+                       (f"{folder}/Video Info.txt",details)],folder+".zip",[jid],
+                      batch_id=job.get("batch_id"))
 
 
 @app.get("/api/thumbnail/{vid}")
