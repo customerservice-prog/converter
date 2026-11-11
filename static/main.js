@@ -294,7 +294,7 @@ async function saveAutoVideo(target){
       throw Error("The video transfer was incomplete. The server copy was retained.");
     await writer.close();
     complete=true;
-    pendingAutoReceipts.set(item.id,{bid,jid:item.id,token});
+    pendingAutoReceipts.set(item.id,{bid,jid:item.id,token:receipt});
     const acknowledged=await confirmAutoSave(bid,item.id,receipt);
     if(!acknowledged)
       throw Error("Saved locally, but server cleanup has not been confirmed. ClipConvert is keeping its copy.");
