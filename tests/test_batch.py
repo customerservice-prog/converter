@@ -137,6 +137,68 @@ class BatchTests(unittest.TestCase):
             module.jobs.pop(jid,None)
             module.STORE.drop("job",jid)
 
+    def test_low_storage_pauses_without_failed_videos_then_resumes(self):
+        payload={"links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
+                 "format":"mp4","quality":0,"rights_confirmed":True}
+        with patch.object(module,"free_storage_mb",return_value=50):
+            response=client.post("/api/batches",json=payload)
+            self.assertEqual(response.status_code,202,response.text)
+            bid=response.json()["id"]
+            for _ in range(200):
+                batch=client.get("/api/batches/"+bid).json()
+                if batch["state"]=="paused":break
+                time.sleep(.02)
+            self.assertEqual(batch["state"],"paused",batch)
+            self.assertEqual(batch["failed"],0,batch)
+            self.assertEqual(batch["paused"],2,batch)
+            low=client.post("/api/batches/"+bid+"/resume")
+            self.assertEqual(low.status_code,409,low.text)
+        with patch.object(module,"free_storage_mb",return_value=3000),patch.object(module,"convert",mock_conversion):
+            resumed=client.post("/api/batches/"+bid+"/resume")
+            self.assertEqual(resumed.status_code,200,resumed.text)
+            complete=wait_batch(bid)
+            self.assertEqual(complete["state"],"complete",complete)
+            self.assertEqual(complete["succeeded"],2,complete)
+            zipped=client.get(complete["download_url"]+"?max_total_mb=1500")
+            self.assertEqual(zipped.status_code,200,zipped.text[:200])
+            with zipfile.ZipFile(io.BytesIO(zipped.content)) as archive:
+                self.assertIsNone(archive.testzip())
+            self.assertEqual(client.get("/api/batches/"+bid).json()["available"],0)
+
+    def test_stop_a_paused_batch_without_erasing_finished_video(self):
+        import uuid, shutil
+        bid=uuid.uuid4().hex
+        ready=uuid.uuid4().hex
+        waiting=uuid.uuid4().hex
+        directory=module.MEDIA/ready
+        directory.mkdir(parents=True,exist_ok=True)
+        media=directory/"ready.mp4"
+        media.write_bytes(b"complete video"+b"x"*5000)
+        now=time.time()
+        module.jobs[ready]={"id":ready,"state":"ready","file":str(media),
+            "video_id":V1,"format":"mp4","quality":0,"created":now,
+            "progress":100,"batch_id":bid}
+        module.jobs[waiting]={"id":waiting,"state":"paused","video_id":V2,
+            "format":"mp4","quality":0,"created":now,"progress":0,"batch_id":bid}
+        module.batches[bid]={"id":bid,"state":"paused","job_ids":[ready,waiting],
+            "format":"mp4","quality":0,"created":now,"ended":now}
+        try:
+            response=client.post("/api/batches/"+bid+"/stop")
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()["state"],"stopped",response.json())
+            self.assertEqual(response.json()["available"],1)
+            self.assertEqual(module.jobs[ready]["state"],"ready")
+            self.assertEqual(module.jobs[waiting]["state"],"cancelled")
+            self.assertTrue(media.is_file())
+        finally:
+            module.batches.pop(bid,None)
+            module.jobs.pop(ready,None)
+            module.jobs.pop(waiting,None)
+            module.STORE.drop("batch",bid)
+            module.STORE.drop("job",ready)
+            module.STORE.drop("job",waiting)
+            shutil.rmtree(directory,ignore_errors=True)
+
     def test_two_video_batch_and_combined_zip(self):
         payload={"links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
                  "format":"mp3","quality":0,"rights_confirmed":True}
