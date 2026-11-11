@@ -323,6 +323,56 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(all(not (module.MEDIA/jid/"video.mp3").exists()
                             for jid in module.batches[bid]["job_ids"]))
 
+    def test_browser_autosave_requires_saved_file_receipt_before_cleanup(self):
+        with patch.object(module,"convert",mock_conversion):
+            started=client.post("/api/batches",json={
+                "links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
+                "format":"mp4","rights_confirmed":True})
+            self.assertEqual(started.status_code,202,started.text)
+            bid=started.json()["id"]
+            batch=wait_batch(bid)
+        jid=batch["items"][0]["id"]
+        original=Path(module.jobs[jid]["file"])
+        original_bytes=original.read_bytes()
+        path=f"/api/batches/{bid}/autosave/{jid}"
+        self.assertEqual(client.post(f"/api/batches/{bid}/autosaved/{jid}",
+            json={"token":"x"*40}).status_code,409)
+        streamed=client.get(path)
+        self.assertEqual(streamed.status_code,200,streamed.text[:200])
+        self.assertEqual(streamed.content,original_bytes)
+        self.assertEqual(int(streamed.headers["content-length"]),len(original_bytes))
+        receipt=streamed.headers.get("x-clipconvert-receipt")
+        self.assertTrue(receipt)
+        self.assertEqual(client.get("/api/batches/"+bid).json()["available"],2)
+        self.assertTrue(original.is_file(),"Streaming must NOT delete before browser disk acknowledgment")
+        self.assertEqual(client.post(f"/api/batches/{bid}/autosaved/{jid}",
+            json={"token":"y"*40}).status_code,409)
+        self.assertTrue(original.is_file())
+        done=client.post(f"/api/batches/{bid}/autosaved/{jid}",json={"token":receipt})
+        self.assertEqual(done.status_code,200,done.text)
+        self.assertEqual(done.json()["status"],"downloaded")
+        self.assertTrue(done.json()["deleted"])
+        self.assertFalse(original.exists())
+        self.assertEqual(client.post(f"/api/batches/{bid}/autosaved/{jid}",
+            json={"token":receipt}).status_code,200,"Ack retry must be idempotent")
+        after=client.get("/api/batches/"+bid).json()
+        self.assertEqual(after["available"],1)
+        self.assertEqual(after["succeeded"],2)
+        self.assertEqual(after["items"][0]["state"],"downloaded")
+
+    def test_browser_autosave_does_not_expose_a_video_outside_the_batch(self):
+        with patch.object(module,"convert",mock_conversion):
+            started=client.post("/api/batches",json={
+                "links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
+                "format":"mp3","rights_confirmed":True})
+            bid=started.json()["id"]
+            batch=wait_batch(bid)
+        other_job=client.get("/api/batches/"+bid).json()["items"][0]["id"]
+        self.assertEqual(client.get("/api/batches/"+("a"*32)+"/autosave/"+other_job).status_code,404)
+        self.assertEqual(client.post("/api/batches/"+("a"*32)+"/autosaved/"+other_job,
+            json={"token":"x"*40}).status_code,404)
+        self.assertTrue(Path(module.jobs[other_job]["file"]).is_file())
+
     def test_single_folder_download_releases_media(self):
         with patch.object(module,"convert",mock_conversion):
             response=client.post("/api/jobs",json={
