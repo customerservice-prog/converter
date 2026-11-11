@@ -44,7 +44,7 @@ const routes={
  },
  "/terms":{
    eyebrow:"PLEASE READ",title:"Terms of use",subtitle:"Plain-language terms describing what ClipConvert does and its limits.",
-   html:"<article class=\"info-card legal-policy\"><p class=\"legal-meta\"><strong>Effective:</strong> November 8, 2026</p><h3>Purpose and eligibility</h3><p>ClipConvert provides a free web interface for converting media that you own or are authorized to download and process. By using the service, you agree to comply with applicable laws, copyright requirements, and the terms of any source platform. Do not use this utility where downloading the material would be unauthorized.</p><h3>What is and is not provided</h3><p>The service offers MP3 and MP4 conversion, uploads of supported media formats, and optional multiple-link processing. Features, output quality, available formats and performance may vary with source media, server capacity and access restrictions. A displayed output bitrate cannot increase quality beyond its source. ClipConvert is not associated with YouTube.</p><h3>Current operational limits</h3><p>To protect stability, the service currently permits up to 100 distinct links in a batch and generally imposes a 120-conversion rolling daily limit for an anonymous browser or network client. Typical upload size is limited to 100 MB, converted files to 512 MB, and source durations to 240 minutes for MP3 or MP4. Limits may change, and completed temporary downloads generally expire about one hour later. Restart-safe temporary storage is not a permanent backup service.</p><h3>Prohibited use</h3><p>You must not submit media that you lack rights to use, infringe intellectual-property rights, bypass technical access protections, abuse automated conversions, probe or attack the infrastructure, or use other people's private content without permission. Accounts or requests can be restricted and offending temporary media may be removed to protect the service or respond to valid complaints.</p><h3>Your responsibility</h3><p>You are responsible for validating your rights, reviewing conversion results before relying on them, and retaining your own copies. ClipConvert does not guarantee uninterrupted operation, continuous availability of a specific third-party source, or error-free media output.</p><h3>Service availability and liability</h3><p>The service is made available on an as-available basis. To the extent permitted by applicable law, the operator disclaims implied warranties relating to fitness, uninterrupted operation and availability. Nothing in these terms limits rights or remedies that cannot lawfully be excluded.</p><h3>Copyright and privacy</h3><p>Read the <a href=\"/copyright\">copyright reporting policy</a> and <a href=\"/privacy\">privacy information</a>. Questions and reports can be submitted through the <a href=\"/contact\">contact form</a>.</p><h3>Operator information</h3><p>ClipConvert is currently identified publicly by its product name. Its separate legal operating entity, mailing address, and any jurisdiction-specific mandatory disclosures must be supplied and verified before this page can be treated as final legal terms. No affiliation with other businesses is asserted.</p></article>"
+   html:"<article class=\"info-card legal-policy\"><p class=\"legal-meta\"><strong>Effective:</strong> November 8, 2026</p><h3>Purpose and eligibility</h3><p>ClipConvert provides a free web interface for converting media that you own or are authorized to download and process. By using the service, you agree to comply with applicable laws, copyright requirements, and the terms of any source platform. Do not use this utility where downloading the material would be unauthorized.</p><h3>What is and is not provided</h3><p>The service offers MP3 and MP4 conversion, uploads of supported media formats, and optional multiple-link processing. Features, output quality, available formats and performance may vary with source media, server capacity and access restrictions. A displayed output bitrate cannot increase quality beyond its source. ClipConvert is not associated with YouTube.</p><h3>Current operational limits</h3><p>To protect stability, the service currently permits up to 100 distinct links in a batch with no daily conversion quota. Processing remains subject to temporary storage, available workers and source-platform restrictions. Typical upload size is limited to 100 MB, converted files to 512 MB, and source durations to 240 minutes for MP3 or MP4. Limits may change, and completed temporary downloads generally expire about one hour later. Restart-safe temporary storage is not a permanent backup service.</p><h3>Prohibited use</h3><p>You must not submit media that you lack rights to use, infringe intellectual-property rights, bypass technical access protections, abuse automated conversions, probe or attack the infrastructure, or use other people's private content without permission. Accounts or requests can be restricted and offending temporary media may be removed to protect the service or respond to valid complaints.</p><h3>Your responsibility</h3><p>You are responsible for validating your rights, reviewing conversion results before relying on them, and retaining your own copies. ClipConvert does not guarantee uninterrupted operation, continuous availability of a specific third-party source, or error-free media output.</p><h3>Service availability and liability</h3><p>The service is made available on an as-available basis. To the extent permitted by applicable law, the operator disclaims implied warranties relating to fitness, uninterrupted operation and availability. Nothing in these terms limits rights or remedies that cannot lawfully be excluded.</p><h3>Copyright and privacy</h3><p>Read the <a href=\"/copyright\">copyright reporting policy</a> and <a href=\"/privacy\">privacy information</a>. Questions and reports can be submitted through the <a href=\"/contact\">contact form</a>.</p><h3>Operator information</h3><p>ClipConvert is currently identified publicly by its product name. Its separate legal operating entity, mailing address, and any jurisdiction-specific mandatory disclosures must be supplied and verified before this page can be treated as final legal terms. No affiliation with other businesses is asserted.</p></article>"
  }
 
 };
@@ -174,6 +174,30 @@ async function refreshHistory(){
   });
   $("historyList").replaceChildren(...cards);
 }
+async function stopSingle(){
+  if(!activeJobId)return;
+  $("jobStop").disabled=true;
+  try{
+    const data=await jsonOrError(await fetch("/api/jobs/"+encodeURIComponent(activeJobId)+"/stop",{method:"POST"}));
+    updateProgress(data);
+    if(["queued","working"].includes(data.state))poll(activeJobId);
+  }catch(err){
+    showError("jobError",err.message);
+    $("jobStop").disabled=false;
+  }
+}
+async function stopBatch(){
+  if(!activeBatchId)return;
+  $("batchStop").disabled=true;
+  try{
+    const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(activeBatchId)+"/stop",{method:"POST"}));
+    updateBatchPanel(data);
+    if(data.state==="stopping")pollBatch(activeBatchId);
+  }catch(err){
+    showError("batchError",err.message);
+    $("batchStop").disabled=false;
+  }
+}
 async function retrySingle(){
   if(!activeJobId)return;
   $("retryVideoButton").disabled=true;
@@ -203,6 +227,9 @@ function updateProgress(data){
     ? "Waiting in queue · position "+data.queue_position
     : (data.message||"Working on it…");
   $("retryVideoButton").hidden=!data.retry_url;
+  $("jobStop").hidden=!["queued","working"].includes(data.state);
+  $("jobStop").disabled=Boolean(data.cancel_requested);
+  $("jobStop").textContent=data.cancel_requested?"Stopping…":"■ Stop conversion";
   const displayedQuality=data.actual_quality ||
     (Number(data.quality)===0?"Best available (Auto)":
       String(data.quality)+(data.format==="mp3"?" kbps":"p"));
@@ -223,6 +250,12 @@ function updateProgress(data){
     $("folderDownload").hidden=!data.download_url;
     $("folderDownload").textContent="↓ Download "+data.format.toUpperCase()+" file only (fastest)";
     $("jobStatus").textContent="Your file is ready!";
+  }
+  if(data.state==="cancelled"){
+    $("jobStatus").textContent="Stopped — no more processing";
+    $("downloadButton").hidden=true;
+    $("folderDownload").hidden=true;
+    $("uploadFallbackButton").hidden=true;
   }
   if(data.state==="error"){
     showError("jobError",data.error||"Conversion failed.");
@@ -272,7 +305,8 @@ function makeBatchRow(item,index){
   title.textContent=(index+1)+". "+(item.title||"YouTube video");
   info.appendChild(title);
   const description=document.createElement("span");
-  description.textContent=item.state==="downloaded"?"Downloaded · server copy deleted"
+  description.textContent=item.state==="cancelled"?"Stopped · not converted"
+    :item.state==="downloaded"?"Downloaded · server copy deleted"
     :item.state==="ready"
     ?"Ready · "+(item.actual_quality||"Best available")+(item.audio_codec==="aac"?" · AAC audio verified":"")
     :item.state==="error"?"Failed · "+(item.error||"Unknown error")
@@ -292,30 +326,39 @@ function makeBatchRow(item,index){
   return row;
 }
 function updateBatchPanel(data){
-  const terminal=["complete","partial","failed"].includes(data.state);
+  const terminal=["complete","partial","failed","stopped"].includes(data.state);
   const items=Array.isArray(data.items)?data.items:[];
   const progress=items.reduce((sum,item)=>sum+(
-    ["ready","downloaded","error"].includes(item.state)?100:Math.max(0,Number(item.progress)||0)),0);
+    ["ready","downloaded","error","cancelled"].includes(item.state)?100:Math.max(0,Number(item.progress)||0)),0);
   const pct=data.total?Math.min(100,Math.round(progress/data.total)):0;
   $("batchProgressFill").style.width=pct+"%";
   $("batchProgressTrack").setAttribute("aria-valuenow",String(pct));
   const hadStorageFailures=/storage (is )?full|storage full/i.test(data.message||"") ||
     items.some(item=>item.state==="error"&&/storage (is )?full|not enough storage/i.test(item.error||""));
   const storageBlocked=Number(data.storage_free_mb??99999)<200;
-  $("batchStatus").textContent=storageBlocked
+  $("batchStatus").textContent=data.state==="stopped"
+    ? "Batch stopped — completed videos are safe"
+    : data.state==="stopping"
+      ? "Stopping unfinished videos…"
+    : storageBlocked
     ? "Storage full — "+(data.available??data.succeeded)+" videos available for download"
     : terminal
       ? (data.failed?"Batch finished — "+data.failed+" failed":"All videos are ready!")
       : "Converting "+data.total+" videos…";
   $("batchSummary").textContent=data.processed+" of "+data.total+" completed · "+
-    (data.available??data.succeeded)+" ready · "+(data.succeeded-(data.available??data.succeeded))+" downloaded · "+data.failed+" failed";
+    (data.available??data.succeeded)+" ready · "+(data.succeeded-(data.available??data.succeeded))+" downloaded · "+data.failed+" failed · "+(data.cancelled||0)+" stopped";
   $("batchRows").replaceChildren(...items.map(makeBatchRow));
   $("batchDownload").href=data.download_url||"#";
   $("batchDownload").hidden=!data.download_url;
   $("batchDownload").textContent="↓ Download "+(data.available??data.succeeded)+" videos in one ZIP";
   $("batchReset").hidden=!terminal;
+  $("batchStop").hidden=!(data.state==="working"||data.state==="stopping");
+  $("batchStop").disabled=data.state==="stopping";
+  $("batchStop").textContent=data.state==="stopping"?"Stopping…":"■ Stop batch";
   $("batchRetry").hidden=!(terminal && Number(data.failed)>0);
-  if(storageBlocked)
+  if(data.state==="stopped")
+    showError("batchError","Only unfinished videos were stopped. Download any completed videos above; they will be deleted from the server after transfer.");
+  else if(storageBlocked)
     showError("batchError","Storage is low. Download available videos to free server space automatically. Completed transfers are deleted from ClipConvert.");
   else if(hadStorageFailures)
     showError("batchError","Some videos failed when storage was low. Finished downloads are removed from the server automatically; retry failed videos when sufficient space is free.");
@@ -328,7 +371,7 @@ async function pollBatch(id){
     const data=await jsonOrError(await fetch("/api/batches/"+encodeURIComponent(id),{cache:"no-store"}));
     batchPollErrors=0;
     updateBatchPanel(data);
-    if(data.state==="working")batchTimer=setTimeout(()=>pollBatch(id),1500);
+    if(data.state==="working"||data.state==="stopping")batchTimer=setTimeout(()=>pollBatch(id),1500);
   }catch(error){
     if(error.status===404){
       showError("batchError","This batch has expired. Start another batch.");
@@ -518,6 +561,8 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("batchUrls").addEventListener("input",updateBatchCount);
   $("batchReset").addEventListener("click",resetBatch);
   $("batchRetry").addEventListener("click",retryBatch);
+  $("batchStop").addEventListener("click",stopBatch);
+  $("jobStop").addEventListener("click",stopSingle);
   $("retryVideoButton").addEventListener("click",retrySingle);
   $("historyClear").addEventListener("click",()=>{
     try{localStorage.removeItem(HISTORY_KEY)}catch{}
