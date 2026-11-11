@@ -58,8 +58,10 @@ jobs:
               if job["state"] in ("ready","error"):break
               time.sleep(.2)
           assert job["state"]=="ready",job
-          with urllib.request.urlopen(root+job["download_url"],timeout=15) as response:
-              before=response.read()
+          from pathlib import Path
+          saved=Path("persisted-state")/"media"/jid/"converted.mp3"
+          assert saved.is_file(),saved
+          before=saved.read_bytes()
           assert len(before)>3000
           open("/tmp/clipconvert-job-id","w").write(jid)
           open("/tmp/clipconvert-job-sha","w").write(__import__("hashlib").sha256(before).hexdigest())
@@ -84,12 +86,19 @@ jobs:
               except Exception:
                   if attempt==44:raise
                   time.sleep(1)
-          with urllib.request.urlopen(root+job["download_url"],timeout=15) as response:
-              media=response.read()
-          assert hashlib.sha256(media).hexdigest()==open("/tmp/clipconvert-job-sha").read()
+          import io,zipfile
+          # ZIP download is single-use and removes the media only after EOF.
           with urllib.request.urlopen(root+job["folder_url"],timeout=15) as response:
               archive=response.read()
           assert archive.startswith(b"PK"),"ZIP unavailable after restart"
+          with zipfile.ZipFile(io.BytesIO(archive)) as z:
+              names=[name for name in z.namelist() if name.endswith(".mp3")]
+              assert len(names)==1,names
+              media=z.read(names[0])
+          assert hashlib.sha256(media).hexdigest()==open("/tmp/clipconvert-job-sha").read()
+          with urllib.request.urlopen(root+"/api/jobs/"+jid,timeout=15) as response:
+              after=json.load(response)
+          assert after["state"]=="downloaded",after
           print("RESTART_PERSISTENCE_PASSED",jid,len(media),flush=True)
           PY
       - name: Show diagnostics on failure
