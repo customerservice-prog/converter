@@ -268,6 +268,34 @@ def restore_jobs():
         threading.Thread(target=convert_batch,args=(bid,),daemon=True).start()
 
 
+def purge_previously_saved_media_once():
+    """One-time owner-authorized cleanup of pre-existing completed downloads.
+
+    Never touch files belonging to an actively processing batch. Keep job
+    metadata (marked downloaded), so historical progress isn't lost.
+    """
+    if os.getenv("PURGE_PREVIOUS_READY_ONCE")!="1":
+        return
+    marker=MEDIA/".legacy-ready-purged-20261110"
+    if marker.exists():
+        return
+    with mutex:
+        for jid,job in list(jobs.items()):
+            if job.get("state")!="ready" or transfer_refs.get(jid):
+                continue
+            batch=batches.get(job.get("batch_id"))
+            if batch and batch.get("state")=="working":
+                continue
+            shutil.rmtree(MEDIA/jid,ignore_errors=True)
+            job.update(state="downloaded",file=None,
+                       message="Previously saved · server copy deleted",
+                       ended=time.time())
+            try:
+                save_job(jid,True)
+            except (OSError,sqlite3.OperationalError):
+                log.warning("Could not persist purged legacy media")
+    marker.touch()
+
 def reclaim_interrupted_video_parts():
     """Only remove non-completed YouTube job fragments after a process restart.
 
@@ -282,6 +310,7 @@ def reclaim_interrupted_video_parts():
 
 @app.on_event("startup")
 def resume_persistent_jobs():
+    purge_previously_saved_media_once()
     reclaim_interrupted_video_parts()
     try:
         cleanup()
