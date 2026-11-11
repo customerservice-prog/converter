@@ -284,6 +284,40 @@ class BatchTests(unittest.TestCase):
             module.STORE.drop("job",waiting)
             shutil.rmtree(directory,ignore_errors=True)
 
+    def test_auto_and_manual_downloads_cannot_overlap_for_one_batch(self):
+        with patch.object(module,"convert",mock_conversion):
+            response=client.post("/api/batches",json={
+                "links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
+                "format":"mp4","rights_confirmed":True})
+            self.assertEqual(response.status_code,202,response.text)
+            bid=response.json()["id"]
+            finished=wait_batch(bid)
+        first=finished["items"][0]
+        media=Path(module.jobs[first["id"]]["file"])
+        self.assertTrue(media.exists())
+        module.begin_batch_transfer(bid,"auto")
+        try:
+            self.assertEqual(client.get(f"/api/batches/{bid}/download?max_total_mb=1500").status_code,409)
+            self.assertEqual(client.get(first["folder_url"]).status_code,409)
+            self.assertEqual(client.get(first["download_url"]).status_code,409)
+            self.assertEqual(module.jobs[first["id"]]["state"],"ready")
+            self.assertTrue(media.exists(),"Conflicting modes must never delete converted media")
+        finally:
+            module.end_batch_transfer(bid)
+        module.begin_batch_transfer(bid,"manual")
+        try:
+            self.assertEqual(client.get(f"/api/batches/{bid}/autosave/{first['id']}").status_code,409)
+            self.assertTrue(media.exists())
+        finally:
+            module.end_batch_transfer(bid)
+        downloaded=client.get(f"/api/batches/{bid}/download?max_total_mb=1500")
+        self.assertEqual(downloaded.status_code,200,downloaded.text[:200])
+        with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+            self.assertIsNone(archive.testzip())
+        self.assertFalse(media.exists())
+        self.assertNotIn(bid,module.active_batch_transfers,
+                         "A completed transfer must release the batch's download lock")
+
     def test_two_video_batch_and_combined_zip(self):
         payload={"links":["https://youtu.be/"+V1,"https://youtu.be/"+V2],
                  "format":"mp3","quality":0,"rights_confirmed":True}
