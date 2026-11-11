@@ -13,7 +13,7 @@ try {
       response=await page.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:60000});
       if(response?.status()===200){
         const version=await page.locator('link[href*="/assets/site.css"]').getAttribute('href').catch(()=>null);
-        if(version?.includes('v=20261108-v5')){releaseReady=true;break;}
+        if(version?.includes('v=20261111-download-modes')){releaseReady=true;break;}
       }
       if(attempt%6===0)console.log('Waiting for matching deployed UI release',viewport.name,attempt);
       await page.waitForTimeout(5000);
