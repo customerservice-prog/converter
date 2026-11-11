@@ -188,7 +188,7 @@ def cleanup():
     reclaim_unused_archives()
     now=time.time()
     with mutex:
-        expired=[k for k,j in jobs.items() if j["state"] in ("ready","error") and now-j.get("ended",now)>TTL
+        expired=[k for k,j in jobs.items() if j["state"] in ("ready","downloaded","error") and now-j.get("ended",now)>TTL
             and not (j.get("batch_id") in batches and (
                 batches[j["batch_id"]].get("state")=="working" or
                 now-batches[j["batch_id"]].get("ended",now)<=TTL))]
