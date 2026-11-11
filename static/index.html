@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=optional">
   <link rel="stylesheet" href="/assets/site.css?v=20261108-v5">
-  <script defer src="/assets/main.js?v=20261109-batch100-cachefix"></script>
+  <script defer src="/assets/main.js?v=20261110-stop-no-daily-limit"></script>
 </head>
 <body class="premium-ui">
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="ambient ambient-c" aria-hidden="true"></div>
@@ -94,6 +94,7 @@
               <p id="batchError" class="form-error" role="alert" hidden></p>
               <a id="batchDownload" class="download-button" href="#" hidden>↓ Download all videos (.zip)</a>
               <p class="batch-note">One organized ZIP, with a separate named folder for each successful video. You can also download individual results above.</p>
+              <button id="batchStop" type="button" class="fallback-button" hidden>■ Stop batch</button>
               <button id="batchRetry" type="button" class="fallback-button" hidden>↻ Retry only failed videos</button>
               <button id="batchReset" type="button" class="start-over" hidden>↶ Convert another batch</button>
             </section>
@@ -106,6 +107,7 @@
               <a id="folderDownload" class="folder-download-button" href="#" hidden>↓ Download file only (fastest)</a>
               <p id="folderHelp" class="folder-help">The main download is a ZIP containing a dedicated folder for each video. Choose the file-only link for the fastest download.</p>
               <button id="uploadFallbackButton" type="button" class="fallback-button" hidden>↑ Convert a file from your device instead</button>
+              <button id="jobStop" type="button" class="fallback-button" hidden>■ Stop conversion</button>
               <button id="retryVideoButton" type="button" class="fallback-button" hidden>↻ Retry this video</button>
               <button id="resetButton" type="button" class="start-over">↶ Convert another video</button>
             </div>
