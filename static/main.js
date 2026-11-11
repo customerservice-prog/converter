@@ -6,14 +6,14 @@ const routes={
    eyebrow:"GOOD TO KNOW",title:"Frequently asked questions",subtitle:"Everything you need to know about using ClipConvert.",
    html:[
     ["What is ClipConvert?","A web tool that converts permitted public YouTube videos into downloadable MP3 audio or MP4 video using server-side FFmpeg and yt-dlp."],
-    ["Is the converter free?","Yes. There is no account, subscription or payment required. To protect the server from overload, a daily usage limit applies."],
+    ["Is the converter free?","Yes. There is no account, subscription or payment required. Downloads are not subject to a daily conversion quota, but server capacity and permitted sources still apply."],
     ["What YouTube links work?","Normal watch URLs, youtu.be share links, Shorts, embed URLs, and finished livestream URLs. Private, age-gated or otherwise restricted content may fail."],
     ["Which formats are available?","Best available (Auto) is selected by default. For MP3, Auto encodes the best source audio at up to 320 kbps; this cannot improve a lower-quality source. For MP4, Auto chooses the highest available video resolution without a fixed cap. You can also choose manual quality limits."],
     ["How long can my video be?","Up to 240 minutes for MP3 conversion and up to 240 minutes for MP4 conversion."],
     ["Why does a conversion sometimes fail?","YouTube may restrict access, the original may be unavailable, the source may exceed size limits, or the server may be temporarily busy. Videos that require sign-in or bypassing restrictions are not supported."],
     ["Where is the file saved?","In your browser's normal downloads folder. On phones, check Files or Downloads."],
     ["How long is the download available?","Completed downloads remain temporarily accessible for approximately one hour, after which the server removes them."],
-    ["Can I convert multiple videos at once?","Yes. Select Multiple links, paste 2–10 different YouTube video URLs (one per line), then choose MP3 or MP4. The app converts up to two concurrently at the best available quality and offers one ZIP with a separate folder for every successfully converted video. Playlists are not supported."],
+    ["Can I convert multiple videos at once?","Yes. Select Multiple links, paste 2–100 different YouTube video URLs (one per line), then choose MP3 or MP4. The app converts up to two concurrently at the best available quality and offers one ZIP with a separate folder for every successfully converted video. Playlists are not supported."],
     ["Do you support YouTube playlists?","No. Paste individual video or Shorts URLs in the Multiple links tab instead."],
     ["Do I need permission to download?","Yes. Use the service only for media you own or are authorized to download, and observe the platform's terms."]
    ].map(q=>'<article class="info-card"><h3>'+q[0]+'</h3><p>'+q[1]+'</p></article>').join("")
@@ -174,6 +174,189 @@ async function refreshHistory(){
   });
   $("historyList").replaceChildren(...cards);
 }
+
+let autoSaveDirectory=null;
+let autoSavePaused=false;
+let autoSaveBusy=false;
+let autoSaveSavedCount=0;
+let autoSaveAbort=null;
+const pendingAutoReceipts=new Map();
+function autoSaveSupported(){
+  return window.isSecureContext && typeof window.showDirectoryPicker==="function" &&
+         Boolean(window.ReadableStream);
+}
+function setAutoSaveStatus(message){
+  $("autoSaveStatus").textContent=message;
+}
+function updateAutoSaveControls(){
+  $("autoSaveChoose").textContent=autoSaveDirectory?"Change automatic download folder":"Choose folder & auto-save videos";
+  $("autoSavePause").hidden=!autoSaveDirectory;
+  $("autoSavePause").textContent=autoSavePaused?"Resume auto-save":"Pause auto-save";
+  $("autoSaveInfo").textContent=autoSaveDirectory
+    ?"Saving to the selected folder while this tab stays open. Files are removed from ClipConvert only after the browser finishes saving them."
+    :"Choose a folder once. Videos will save individually as soon as they finish, freeing server space for the next video. Keep this tab open.";
+}
+async function chooseAutoSaveDirectory(){
+  if(!autoSaveSupported()){
+    setAutoSaveStatus("Automatic folder saving requires desktop Chrome or Edge. Manual downloads are still available.");
+    return;
+  }
+  try{
+    // Browser permission must be requested directly from the user's click.
+    const chosen=await window.showDirectoryPicker({mode:"readwrite"});
+    autoSaveDirectory=chosen;
+    autoSavePaused=false;
+    autoSaveSavedCount=0;
+    updateAutoSaveControls();
+    setAutoSaveStatus("Folder selected: "+chosen.name+". Looking for completed videos…");
+    void autoSavePump();
+  }catch(error){
+    if(error.name!=="AbortError")
+      setAutoSaveStatus("Folder permission was not granted. Nothing was deleted from ClipConvert.");
+  }
+}
+function safeAutoSaveName(name){
+  let cleaned=String(name||"Video")
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g,"_").replace(/\s+/g," ").trim()
+    .replace(/[. ]+$/g,"").slice(0,75);
+  if(!cleaned || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned))
+    cleaned="Video "+cleaned;
+  return cleaned;
+}
+async function findNextAutoSaveVideo(){
+  const history=historyEntries().filter(entry=>entry.type==="batch").reverse();
+  if(activeBatchId&&!history.some(entry=>entry.id===activeBatchId))
+    history.push({id:activeBatchId,type:"batch"});
+  for(const entry of history){
+    if(autoSavePaused||!autoSaveDirectory)return null;
+    try{
+      const response=await fetch("/api/batches/"+encodeURIComponent(entry.id),{cache:"no-store"});
+      if(!response.ok)continue;
+      const batch=await response.json();
+      const index=batch.items.findIndex(item=>item.state==="ready");
+      if(index>=0){
+        return {bid:entry.id,index,item:batch.items[index]};
+      }
+    }catch{
+      // An unavailable old batch does not prevent another saved batch being used.
+    }
+  }
+  return null;
+}
+async function confirmAutoSave(bid,jid,token){
+  const url="/api/batches/"+encodeURIComponent(bid)+"/autosaved/"+encodeURIComponent(jid);
+  for(let attempt=0;attempt<5;attempt++){
+    try{
+      const response=await fetch(url,{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({token})});
+      const data=await response.json();
+      if(response.ok && data.status==="downloaded" && data.deleted)return true;
+      // The server may not have finished closing its transfer stream yet.
+      if(response.status!==409 && response.status<500)break;
+    }catch{}
+    await new Promise(resolve=>setTimeout(resolve,350+attempt*450));
+  }
+  return false;
+}
+async function saveAutoVideo(target){
+  const {bid,index,item}=target;
+  const videoName=safeAutoSaveName(item.title);
+  const folder=await autoSaveDirectory.getDirectoryHandle("ClipConvert",{create:true});
+  const batchFolder=await folder.getDirectoryHandle("Batch-"+bid.slice(0,8),{create:true});
+  const videoFolder=await batchFolder.getDirectoryHandle(
+    String(index+1).padStart(2,"0")+" - "+videoName+" - "+item.id.slice(0,6),
+    {create:true});
+  const fileName=videoName+"."+(item.format==="mp3"?"mp3":"mp4");
+  const fileHandle=await videoFolder.getFileHandle(fileName,{create:true});
+  const writer=await fileHandle.createWritable();
+  const controller=new AbortController();
+  autoSaveAbort=controller;
+  let complete=false;
+  try{
+    const url="/api/batches/"+encodeURIComponent(bid)+"/autosave/"+encodeURIComponent(item.id);
+    const response=await fetch(url,{signal:controller.signal,cache:"no-store"});
+    if(!response.ok||!response.body)throw Error("The completed video could not be streamed.");
+    const receipt=response.headers.get("X-ClipConvert-Receipt");
+    if(!receipt)throw Error("The server did not issue a safe-download receipt.");
+    const expected=Number(response.headers.get("Content-Length")||0);
+    const reader=response.body.getReader();
+    let bytes=0;
+    while(true){
+      if(autoSavePaused)throw Error("Automatic download was paused.");
+      const part=await reader.read();
+      if(part.done)break;
+      bytes+=part.value.byteLength;
+      await writer.write(part.value);
+      setAutoSaveStatus("Saving "+videoName+"… "+(expected?Math.min(99,Math.floor(bytes/expected*100))+"%":Math.round(bytes/1048576)+" MB"));
+    }
+    if(expected && bytes!==expected)
+      throw Error("The video transfer was incomplete. The server copy was retained.");
+    await writer.close();
+    complete=true;
+    pendingAutoReceipts.set(item.id,{bid,jid:item.id,token});
+    const acknowledged=await confirmAutoSave(bid,item.id,receipt);
+    if(!acknowledged)
+      throw Error("Saved locally, but server cleanup has not been confirmed. ClipConvert is keeping its copy.");
+    pendingAutoReceipts.delete(item.id);
+    autoSaveSavedCount++;
+    setAutoSaveStatus(autoSaveSavedCount+" video(s) saved to "+autoSaveDirectory.name+
+      ". Server copies released; processing may resume.");
+  }finally{
+    if(!complete){
+      try{await writer.abort()}catch{}
+    }
+    if(autoSaveAbort===controller)autoSaveAbort=null;
+  }
+}
+async function autoSavePump(){
+  if(!autoSaveDirectory||autoSavePaused||autoSaveBusy)return;
+  autoSaveBusy=true;
+  try{
+    for(const [id,receipt] of pendingAutoReceipts){
+      if(!await confirmAutoSave(receipt.bid,receipt.jid,receipt.token)){
+        setAutoSaveStatus("A video was saved locally, but server cleanup needs retry. The server copy remains available.");
+        return;
+      }
+      pendingAutoReceipts.delete(id);
+      autoSaveSavedCount++;
+    }
+    for(let count=0;count<100 && autoSaveDirectory && !autoSavePaused;count++){
+      const target=await findNextAutoSaveVideo();
+      if(!target){
+        setAutoSaveStatus(autoSaveSavedCount+" video(s) saved. Waiting for more completed videos. Keep this tab open.");
+        break;
+      }
+      try{
+        if(navigator.locks&&navigator.locks.request){
+          const acquired=await navigator.locks.request("clipconvert-save-"+target.item.id,
+            {ifAvailable:true},async lock=>{
+              if(!lock)return false;
+              await saveAutoVideo(target);
+              return true;
+            });
+          if(!acquired)break;
+        }else{
+          await saveAutoVideo(target);
+        }
+      }catch(error){
+        if(autoSavePaused){
+          setAutoSaveStatus("Automatic saving paused. Partial transfers are not confirmed or deleted.");
+        }else{
+          autoSavePaused=true;
+          setAutoSaveStatus((error.message||"Download could not be completed")+
+            " Select Resume auto-save to try again. Server files were kept unless a download was confirmed.");
+          updateAutoSaveControls();
+        }
+        break;
+      }
+    }
+    refreshHistory();
+  }finally{
+    autoSaveBusy=false;
+  }
+}
+
 let priorRecovery={current:null,checked:0,found:null,checking:false};
 function showPriorRecovery(id){
   const link=$("batchOlderDownload"),open=$("batchOlderOpen");
@@ -632,6 +815,22 @@ document.addEventListener("DOMContentLoaded",()=>{
     const id=$("batchOlderOpen").dataset.batchId;
     if(id)openSavedConversion("batch",id);
   });
+  $("autoSaveChoose").addEventListener("click",chooseAutoSaveDirectory);
+  $("autoSavePause").addEventListener("click",()=>{
+    autoSavePaused=!autoSavePaused;
+    if(autoSavePaused&&autoSaveAbort)autoSaveAbort.abort();
+    updateAutoSaveControls();
+    setAutoSaveStatus(autoSavePaused
+      ?"Auto-save paused. Incomplete transfers will remain on the server."
+      :"Auto-save resumed. Looking for completed videos…");
+    if(!autoSavePaused)void autoSavePump();
+  });
+  if(!autoSaveSupported()){
+    $("autoSaveChoose").disabled=true;
+    setAutoSaveStatus("Automatic folder saving requires Chrome or Edge on desktop; use the manual download links here.");
+  }
+  updateAutoSaveControls();
+  window.setInterval(()=>{if(autoSaveDirectory&&!autoSavePaused)void autoSavePump()},4000);
   $("batchStop").addEventListener("click",stopBatch);
   $("jobStop").addEventListener("click",stopSingle);
   $("retryVideoButton").addEventListener("click",retrySingle);
