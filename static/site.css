@@ -628,3 +628,26 @@ html[data-route="secondary"] #homepage{display:none!important}
 /* Prevent decorative background glows from widening the document at first paint. */
 html{overflow-x:hidden}
 @supports (overflow:clip){html{overflow-x:clip}}
+
+
+/* ClipConvert batch download workflow — auto and ZIP are mutually exclusive. */
+body.premium-ui .batch-identity{font-size:11px;letter-spacing:.2px;color:#b1c5ed;margin:12px 0 14px;font-variant-numeric:tabular-nums}
+body.premium-ui .download-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:20px 0 10px}
+body.premium-ui .download-mode{display:flex;flex-direction:column;gap:7px;align-items:flex-start;min-width:0;padding:15px 16px;border:1px solid #4d658b;border-radius:13px;background:#0d1c36;color:#d9e7ff;text-align:left;transition:border-color .18s,background .18s,box-shadow .18s}
+body.premium-ui .download-mode:hover{border-color:#9bb9ff;background:#172b50}
+body.premium-ui .download-mode.selected{border-color:#7ae2df;background:linear-gradient(120deg,#203b68,#133a4d);box-shadow:inset 0 0 0 1px #66d9e333}
+body.premium-ui .download-mode-title{font-weight:800;font-size:13px;line-height:1.5}
+body.premium-ui .download-mode-detail{font-size:11px;line-height:1.55;color:#adc0df;font-weight:500}
+body.premium-ui .mode-recommended{display:inline-block;background:#1e736a;color:#eafff8;border-radius:6px;padding:2px 6px;font-size:9px;font-weight:800;margin-left:3px;vertical-align:1px}
+body.premium-ui .download-mode-hint{font-size:11px;color:#b4cbe5;line-height:1.6;margin:9px 0 14px}
+body.premium-ui .autosave-panel,body.premium-ui .manual-download-panel{background:linear-gradient(112deg,#132b4e,#11223f);border:1px solid #43638f;border-radius:13px;padding:17px 18px;margin:12px 0 18px}
+body.premium-ui .autosave-info{font-size:12px;color:#bdd2e9;line-height:1.6;margin:0 0 13px}
+body.premium-ui .autosave-choose{width:100%;display:block;background:linear-gradient(90deg,#85a6ff,#60dee8);border:0;color:#091932;font-weight:800;font-size:13px;border-radius:10px;padding:14px 16px;text-align:center;cursor:pointer}
+body.premium-ui .autosave-choose:hover{filter:brightness(1.08)}
+body.premium-ui .autosave-choose:disabled{opacity:.55;cursor:not-allowed}
+body.premium-ui .autosave-status{font-size:11px;color:#c0d9f4;overflow-wrap:anywhere;margin:12px 0 0;line-height:1.7}
+body.premium-ui .manual-download-panel .download-button{margin:0}
+body.premium-ui .manual-download-panel .batch-note{margin:11px 0 0;color:#aabdd5}
+body.premium-ui .batch-item-download[aria-disabled="true"]{opacity:.55;pointer-events:none}
+body.premium-ui .batch-panel .fallback-button{margin-top:10px}
+@media(max-width:540px){body.premium-ui .download-modes{grid-template-columns:1fr;gap:8px}body.premium-ui .download-mode{padding:12px 14px}body.premium-ui .autosave-panel,body.premium-ui .manual-download-panel{padding:14px}}
