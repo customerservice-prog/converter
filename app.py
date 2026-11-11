@@ -1125,20 +1125,34 @@ def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
 
 
 @app.get("/api/batches/{bid}/download")
-def download_batch(bid:str):
+def download_batch(bid:str,max_total_mb:int=0):
     with mutex:
         batch=batches.get(bid)
-        if not batch or batch["state"] not in ("working","stopping","complete","partial","stopped"):
+        if not batch or batch["state"] not in ("working","stopping","paused","complete","partial","stopped"):
             raise HTTPException(404,"The batch archive is not ready or has expired.")
         items=[dict(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
     ready=[job for job in items if job["state"]=="ready"
            and job.get("file") and Path(job["file"]).is_file()]
     if not ready: raise HTTPException(404,"No completed files are available.")
+    if max_total_mb:
+        if not 100<=max_total_mb<=4096:
+            raise HTTPException(400,"Choose a download part size between 100 and 4096 MB.")
+        selected=[]
+        size=0
+        max_bytes=max_total_mb*1024*1024
+        for item in ready:
+            bytes_needed=Path(item["file"]).stat().st_size
+            if selected and size+bytes_needed>max_bytes:
+                break
+            selected.append(item)
+            size+=bytes_needed
+        ready=selected
+    chosen={item["id"] for item in ready}
     entries=[]
     lines=[f"Batch results: {len(ready)} of {len(items)} videos ready",""]
     for index,job in enumerate(items,1):
         title=safe_media_name(job.get("title") or "YouTube video")
-        if job["state"]=="ready" and job.get("file") and Path(job["file"]).is_file():
+        if job["id"] in chosen and job["state"]=="ready" and job.get("file") and Path(job["file"]).is_file():
             dirname=f"{index:02d} - {title}"
             media=Path(job["file"])
             entries.append((f"{dirname}/{title}.{job['format']}",media))
@@ -1148,10 +1162,17 @@ def download_batch(bid:str):
                      f"Source: https://www.youtube.com/watch?v={job['video_id']}\n")
             entries.append((f"{dirname}/Video Info.txt",details))
             lines.append(f"{index:02d}. OK — {job.get('title') or title}")
+        elif job["state"]=="ready":
+            lines.append(f"{index:02d}. PENDING — {job.get('title') or title} (available in a later download part)")
+        elif job["state"]=="downloaded":
+            lines.append(f"{index:02d}. DOWNLOADED — {job.get('title') or title}")
+        elif job["state"]=="paused":
+            lines.append(f"{index:02d}. PAUSED — {job.get('title') or title}")
         else:
             lines.append(f"{index:02d}. FAILED — {job.get('title') or title}: {job.get('error') or 'File unavailable'}")
     entries.append(("Batch Results.txt","\n".join(lines)+"\n"))
-    return stream_zip(entries,"ClipConvert-"+bid[:8]+"-all-videos.zip",
+    suffix="-part" if max_total_mb else "-all-videos"
+    return stream_zip(entries,"ClipConvert-"+bid[:8]+suffix+".zip",
                       [j["id"] for j in ready])
 
 
