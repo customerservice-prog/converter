@@ -58,9 +58,14 @@ jobs:
               if job["state"] in ("ready","error"):break
               time.sleep(.2)
           assert job["state"]=="ready",job
+          # Read the mounted file without issuing an HTTP download (which
+          # intentionally deletes the server copy after a complete transfer).
           from pathlib import Path
-          saved=Path("persisted-state")/"media"/jid/"converted.mp3"
-          assert saved.is_file(),saved
+          import subprocess
+          saved=Path("/tmp/clipconvert-before-restart.mp3")
+          subprocess.run(["docker","cp",
+                          "clipconvert-before:/data/media/"+jid+"/converted.mp3",
+                          str(saved)],check=True)
           before=saved.read_bytes()
           assert len(before)>3000
           open("/tmp/clipconvert-job-id","w").write(jid)
