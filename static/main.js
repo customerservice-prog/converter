@@ -245,12 +245,12 @@ function setAutoSaveStatus(message){
   $("autoSaveStatus").textContent=message;
 }
 function updateAutoSaveControls(){
-  $("autoSaveChoose").textContent=autoSaveDirectory?"Change automatic download folder":"Choose folder for optional auto-save";
+  $("autoSaveChoose").textContent=autoSaveDirectory?"Change download folder":"Choose folder and start automatic downloads";
   $("autoSavePause").hidden=!autoSaveDirectory;
-  $("autoSavePause").textContent=autoSavePaused?"Resume auto-save":"Pause auto-save";
+  $("autoSavePause").textContent=autoSavePaused?"Resume automatic downloads":"Pause automatic downloads";
   $("autoSaveInfo").textContent=autoSaveDirectory
     ?"Saving to the selected folder while this tab stays open. Files are removed from ClipConvert only after the browser finishes saving them."
-    :"Auto-save is optional. The ZIP download above works without selecting a folder. Choose a folder only if you want files saved individually as they finish.";
+    :"Choose a folder once to save videos from this batch only. Railway copies are deleted after a completed and confirmed transfer.";
 }
 async function chooseAutoSaveDirectory(){
   if(!autoSaveSupported()){
@@ -261,10 +261,12 @@ async function chooseAutoSaveDirectory(){
     // Browser permission must be requested directly from the user's click.
     const chosen=await window.showDirectoryPicker({mode:"readwrite"});
     autoSaveDirectory=chosen;
+    if(activeBatchId)batchDownloadModes.set(activeBatchId,"auto");
+    downloadMode="auto";
     autoSavePaused=false;
     autoSaveSavedCount=0;
-    updateAutoSaveControls();
-    setAutoSaveStatus("Folder selected: "+chosen.name+". Looking for completed videos…");
+    updateDownloadModeControls();
+    setAutoSaveStatus("Folder selected: "+chosen.name+". Saving videos from batch "+activeBatchId?.slice(0,8)+" only…");
     void autoSavePump();
   }catch(error){
     if(error.name!=="AbortError")
@@ -290,24 +292,17 @@ function safeAutoSaveName(name){
   return cleaned;
 }
 async function findNextAutoSaveVideo(){
-  const history=historyEntries().filter(entry=>entry.type==="batch").reverse();
-  if(activeBatchId&&!history.some(entry=>entry.id===activeBatchId))
-    history.push({id:activeBatchId,type:"batch"});
-  for(const entry of history){
-    if(autoSavePaused||!autoSaveDirectory)return null;
-    try{
-      const response=await fetch("/api/batches/"+encodeURIComponent(entry.id),{cache:"no-store"});
-      if(!response.ok)continue;
-      const batch=await response.json();
-      const index=batch.items.findIndex(item=>item.state==="ready");
-      if(index>=0){
-        return {bid:entry.id,index,item:batch.items[index]};
-      }
-    }catch{
-      // An unavailable old batch does not prevent another saved batch being used.
-    }
-  }
-  return null;
+  // Never silently consume ready files from other batches in browser history.
+  const bid=activeBatchId;
+  if(!bid || autoSavePaused || !autoSaveDirectory || downloadMode!=="auto")return null;
+  try{
+    const response=await fetch("/api/batches/"+encodeURIComponent(bid),{cache:"no-store"});
+    if(!response.ok)return null;
+    const batch=await response.json();
+    if(activeBatchId!==bid || downloadMode!=="auto" || autoSavePaused)return null;
+    const index=batch.items.findIndex(item=>item.state==="ready");
+    return index>=0?{bid,index,item:batch.items[index]}:null;
+  }catch{return null;}
 }
 async function confirmAutoSave(bid,jid,token){
   const url="/api/batches/"+encodeURIComponent(bid)+"/autosaved/"+encodeURIComponent(jid);
@@ -327,8 +322,11 @@ async function confirmAutoSave(bid,jid,token){
 }
 async function saveAutoVideo(target){
   const {bid,index,item}=target;
+  if(bid!==activeBatchId || downloadMode!=="auto")return;
+  const selectedDirectory=autoSaveDirectory;
+  if(!selectedDirectory || autoSavePaused)return;
   const videoName=safeAutoSaveName(item.title);
-  const folder=await autoSaveDirectory.getDirectoryHandle("ClipConvert",{create:true});
+  const folder=await selectedDirectory.getDirectoryHandle("ClipConvert",{create:true});
   const batchFolder=await folder.getDirectoryHandle("Batch-"+bid.slice(0,8),{create:true});
   const videoFolder=await batchFolder.getDirectoryHandle(
     String(index+1).padStart(2,"0")+" - "+videoName+" - "+item.id.slice(0,6),
@@ -349,7 +347,7 @@ async function saveAutoVideo(target){
     const reader=response.body.getReader();
     let bytes=0;
     while(true){
-      if(autoSavePaused)throw Error("Automatic download was paused.");
+      if(autoSavePaused || activeBatchId!==bid || downloadMode!=="auto")throw Error("Automatic download was paused or batch changed.");
       const part=await reader.read();
       if(part.done)break;
       bytes+=part.value.byteLength;
@@ -366,7 +364,7 @@ async function saveAutoVideo(target){
       throw Error("Saved locally, but server cleanup has not been confirmed. ClipConvert is keeping its copy.");
     pendingAutoReceipts.delete(item.id);
     autoSaveSavedCount++;
-    setAutoSaveStatus(autoSaveSavedCount+" video(s) saved to "+autoSaveDirectory.name+
+    setAutoSaveStatus(autoSaveSavedCount+" saved from batch "+bid.slice(0,8)+" to "+selectedDirectory.name+
       ". Server copies released; processing may resume.");
   }finally{
     if(!complete){
@@ -376,7 +374,8 @@ async function saveAutoVideo(target){
   }
 }
 async function autoSavePump(){
-  if(!autoSaveDirectory||autoSavePaused||autoSaveBusy)return;
+  if(!autoSaveDirectory||autoSavePaused||autoSaveBusy||downloadMode!=="auto"||!activeBatchId)return;
+  const intendedBatch=activeBatchId;
   autoSaveBusy=true;
   try{
     for(const [id,receipt] of pendingAutoReceipts){
@@ -387,10 +386,11 @@ async function autoSavePump(){
       pendingAutoReceipts.delete(id);
       autoSaveSavedCount++;
     }
-    for(let count=0;count<100 && autoSaveDirectory && !autoSavePaused;count++){
+    for(let count=0;count<100 && autoSaveDirectory && !autoSavePaused &&
+        downloadMode==="auto" && activeBatchId===intendedBatch;count++){
       const target=await findNextAutoSaveVideo();
       if(!target){
-        setAutoSaveStatus(autoSaveSavedCount+" video(s) saved. Waiting for more completed videos. Keep this tab open.");
+        setAutoSaveStatus(autoSaveSavedCount+" saved from batch "+intendedBatch.slice(0,8)+". Waiting for more completed videos. Keep this tab open.");
         break;
       }
       try{
@@ -422,6 +422,7 @@ async function autoSavePump(){
     refreshHistory();
   }finally{
     autoSaveBusy=false;
+    if(lastBatchData)updateBatchPanel(lastBatchData);
   }
 }
 
