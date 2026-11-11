@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=optional">
   <link rel="stylesheet" href="/assets/site.css?v=20261108-v5">
-  <script defer src="/assets/main.js?v=20261111-storage-resume"></script>
+  <script defer src="/assets/main.js?v=20261111-batch-recovery-fix"></script>
 </head>
 <body class="premium-ui">
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="ambient ambient-c" aria-hidden="true"></div>
@@ -93,6 +93,8 @@
               <div id="batchRows" class="batch-results"></div>
               <p id="batchError" class="form-error" role="alert" hidden></p>
               <a id="batchDownload" class="download-button" href="#" hidden>↓ Download all videos (.zip)</a>
+              <a id="batchOlderDownload" class="download-button" href="#" hidden>↓ Download completed videos from earlier batch</a>
+              <button id="batchOlderOpen" type="button" class="fallback-button" hidden>View earlier batch</button>
               <p class="batch-note">One organized ZIP, with a separate named folder for each successful video. You can also download individual results above.</p>
               <button id="batchStop" type="button" class="fallback-button" hidden>■ Stop batch</button>
               <button id="batchRetry" type="button" class="fallback-button" hidden>↻ Retry only failed videos</button>
