@@ -369,8 +369,8 @@ def resume_persistent_jobs():
     except (OSError, sqlite3.OperationalError):
         log.exception("Startup maintenance deferred by storage pressure")
     if shutil.disk_usage(MEDIA).free < MIN_FREE_MB*1024*1024:
-        # Do not refill a saturated shared SQLite/media volume on restart.
-        # Keep finished files; expose a partial batch for download and retry.
+        # On restart, never turn a lack of disk space into failed video jobs.
+        # Persist a recoverable paused state, retaining all completed media.
         with mutex:
             for batch in batches.values():
                 if batch.get("state")!="working":
@@ -378,13 +378,18 @@ def resume_persistent_jobs():
                 for jid in batch["job_ids"]:
                     job=jobs.get(jid)
                     if job and job.get("state") in ("working","queued"):
-                        job.update(state="error",progress=0,
-                                   error="Storage is full. Download finished videos and retry after space becomes available.",
-                                   message="Paused: storage full",ended=time.time())
-                success=sum(jobs[jid].get("state")=="ready" for jid in batch["job_ids"] if jid in jobs)
-                batch.update(state="partial" if success else "failed",
-                             message="Storage is full. Finished videos are available to download.",
+                        job.update(state="paused",progress=0,error=None,
+                                   message="Waiting for downloads to release storage.",
+                                   ended=time.time())
+                        try:save_job(jid,True)
+                        except (OSError,sqlite3.OperationalError):
+                            log.warning("Unable to persist paused media job during storage pressure")
+                batch.update(state="paused",
+                             message="Storage nearly full; download available videos to resume.",
                              ended=time.time())
+                try:STORE.put("batch",batch["id"],batch)
+                except (OSError,sqlite3.OperationalError):
+                    log.warning("Unable to persist paused batch during storage pressure")
         return
     restore_jobs()
 
