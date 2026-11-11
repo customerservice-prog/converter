@@ -88,7 +88,7 @@ def video_id(raw:str)->str:
     except Exception as exc: raise ValueError("Enter a valid YouTube URL.") from exc
 
 def public(job):
-    fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","audio_codec","audio_channels","error")
+    fields=("id","state","progress","message","title","thumbnail","duration","format","quality","actual_quality","audio_codec","audio_channels","error","cancel_requested")
     data={key:job.get(key) for key in fields}
     if job["state"]=="error" and job.get("video_id") and not job.get("batch_id") and int(job.get("retry_count",0))<2:
         data["retry_url"]="/api/jobs/"+job["id"]+"/retry"
@@ -1012,7 +1012,7 @@ def stream_zip(entries:list[tuple[str,Path|str]],filename:str,job_ids=None):
 def download_batch(bid:str):
     with mutex:
         batch=batches.get(bid)
-        if not batch or batch["state"] not in ("working","complete","partial"):
+        if not batch or batch["state"] not in ("working","stopping","complete","partial","stopped"):
             raise HTTPException(404,"The batch archive is not ready or has expired.")
         items=[dict(jobs[jid]) for jid in batch["job_ids"] if jid in jobs]
     ready=[job for job in items if job["state"]=="ready"
