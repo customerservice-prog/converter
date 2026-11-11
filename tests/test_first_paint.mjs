@@ -134,7 +134,7 @@ try {
   });
   page.on('pageerror',error=>console.log('AUTOSAVE_PAGE_ERROR',error.message));
   await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
-  await page.locator('script[src*="20261111-streaming-autosave"]').waitFor({state:'attached',timeout:30000});
+  await page.locator('script[src*="20261111-zip-default-folder-recovery"]').waitFor({state:'attached',timeout:30000});
   await page.evaluate((id)=>openSavedConversion('batch',id),bid);
   await page.locator('#autoSaveChoose').click();
   try{
@@ -154,8 +154,40 @@ try {
   assert.equal(files[0].closed,true);
   assert.equal(acks,1);
   assert.equal(savedState,'downloaded');
+  // The original one-click ZIP remains available without folder permissions.
+  savedState='ready';
+  await page.evaluate((id)=>openSavedConversion('batch',id),bid);
+  const zipLink=page.locator('#batchDownload');
+  assert.equal(await zipLink.isVisible(),true);
+  assert.equal((await zipLink.getAttribute('href')).includes('max_total_mb=1500'),true);
+
+  // A directory selected earlier can disappear or lose permission.
+  // Reproduce Edge/Chrome NotFoundError and verify the ZIP fallback remains.
+  await page.evaluate(()=>{
+    window.__workingPicker=window.showDirectoryPicker;
+    window.showDirectoryPicker=async()=>({
+      name:'MovedFolder',
+      getDirectoryHandle:async()=>{
+        throw new DOMException('A requested file or directory could not be found','NotFoundError');
+      }
+    });
+  });
+  await page.locator('#autoSaveChoose').click();
+  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('selected download folder was moved'),null,{timeout:12000});
+  assert.equal(await zipLink.isVisible(),true);
+  assert.equal(acks,1,'Missing browser folder must never acknowledge a server deletion');
+  const chooseLabel=await page.locator('#autoSaveChoose').textContent();
+  assert.match(chooseLabel,/Choose folder for optional auto-save/);
+
+  // Picking a new valid folder restores automatic saving without a page reload.
+  await page.evaluate(()=>{window.showDirectoryPicker=window.__workingPicker});
+  await page.locator('#autoSaveChoose').click();
+  await page.waitForFunction(()=>document.querySelector('#autoSaveStatus')?.textContent?.includes('2 video(s) saved'),null,{timeout:12000});
+  assert.equal(acks,2,'Replacement folder should allow a completed save to be acknowledged');
+  assert.equal((await page.evaluate(()=>window.__autoSavedTestFiles)).length,2);
   await page.close();
   console.log('BROWSER_AUTOSAVE_STREAM_AND_ACK_PASSED');
+  console.log('BROWSER_MISSING_FOLDER_RECOVERY_ZIP_FALLBACK_PASSED');
 
   console.log('CLIPCONVERT_FIRST_PAINT_AND_MOBILE_PASSED');
 } finally {
