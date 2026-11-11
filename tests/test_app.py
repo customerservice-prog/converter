@@ -1,5 +1,5 @@
 import unittest
-from app import video_id, QUALITIES
+from app import video_id, source_url, QUALITIES
 
 V="dQw4w9WgXcQ"
 class ValidationTests(unittest.TestCase):
@@ -14,6 +14,25 @@ class ValidationTests(unittest.TestCase):
                   "https://youtube.com/playlist?list=abc"):
             with self.subTest(s=s):
                 with self.assertRaises(ValueError): video_id(s)
+    def test_facebook_public_urls(self):
+        url="https://www.facebook.com/watch/?v=1632760975048127"
+        for link in ("https://www.facebook.com/reel/1632760975048127",
+                     "https://m.facebook.com/videos/1632760975048127",
+                     url, "https://facebook.com/watch?v=1632760975048127",
+                     "https://www.facebook.com/video.php?v=1632760975048127"):
+            with self.subTest(link=link): self.assertEqual(source_url(link),url)
+
+    def test_facebook_rejects_unsafe_urls(self):
+        for link in ("https://facebook.com.evil.test/reel/1234",
+                     "http://127.0.0.1/",
+                     "https://www.facebook.com/groups/123",
+                     "https://www.facebook.com/login",
+                     "https://user:pass@www.facebook.com/reel/123",
+                     "https://www.facebook.com:8080/reel/123",
+                     "file:///etc/passwd"):
+            with self.subTest(link=link):
+                with self.assertRaises(ValueError): source_url(link)
+
     def test_formats(self):
         self.assertIn(192,QUALITIES["mp3"])
         self.assertIn(720,QUALITIES["mp4"])
