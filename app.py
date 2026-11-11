@@ -1212,6 +1212,8 @@ def confirm_browser_saved(bid:str,jid:str,receipt:SaveReceipt):
         if (job["state"]!="ready" or
             not hmac.compare_digest(str(job.get("auto_stream_token") or ""),receipt.token)):
             raise HTTPException(409,"The transfer has not been confirmed. Server copy was retained.")
+        if transfer_refs.get(jid,0):
+            raise HTTPException(409,"A transfer is still active. Server copy is retained until it finishes.")
         job.pop("auto_stream_token",None)
         job.pop("auto_streamed_at",None)
     finish_downloads([jid],True)
